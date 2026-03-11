@@ -81,7 +81,7 @@
   <!-- Subtitle -->
   <text x="114" y="332"
     fill="#C6B8A8"
-    font-size="26"
+    font-size="23"
     font-weight="500"
     font-family="Manrope, Bricolage Grotesque, -apple-system, BlinkMacSystemFont, Helvetica Neue, Helvetica, Arial, sans-serif">
     a fast skill registry for agents, with vector search.
