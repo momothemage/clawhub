@@ -308,6 +308,9 @@ function clampInt(value: number, min: number, max: number) {
 /**
  * Count a page of skillSearchDigest docs and return the partial public count.
  * Each query runs in its own transaction (~1000 docs, ~900 KB), well under limits.
+ *
+ * Paginates by _creationTime (default ordering) which is immutable and stable.
+ * The isPublicSkillDoc filter handles softDeletedAt checks in JS.
  */
 export const countPublicDigestPageInternal = internalQuery({
   args: { cursor: v.optional(v.string()), pageSize: v.optional(v.number()) },
@@ -315,7 +318,6 @@ export const countPublicDigestPageInternal = internalQuery({
     const pageSize = clampInt(args.pageSize ?? 1000, 100, 2000)
     const { page, isDone, continueCursor } = await ctx.db
       .query('skillSearchDigest')
-      .withIndex('by_active_updated', (q) => q.eq('softDeletedAt', undefined))
       .paginate({ cursor: args.cursor ?? null, numItems: pageSize })
 
     let count = 0
