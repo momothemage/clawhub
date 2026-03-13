@@ -969,7 +969,7 @@ async function buildPublicSkillEntries(
         getOwnerInfo(skill._id, skill.ownerUserId),
       ])
       const publicSkill = toPublicSkill(skill)
-      if (!publicSkill) return null
+      if (!publicSkill || !ownerInfo.owner) return null
       const latestVersion = hasSummary
         ? toPublicSkillListVersionFromSummary(
             summary!,
@@ -986,6 +986,31 @@ async function buildPublicSkillEntries(
   )
 
   return entries.filter((entry): entry is PublicSkillEntry => entry !== null)
+}
+
+async function filterSkillsByActiveOwner(
+  ctx: Pick<QueryCtx, 'db'>,
+  skills: Doc<'skills'>[],
+) {
+  const ownerCache = new Map<Id<'users'>, Promise<Doc<'users'> | null>>()
+
+  const getOwner = (ownerUserId: Id<'users'>) => {
+    const cached = ownerCache.get(ownerUserId)
+    if (cached) return cached
+    const ownerPromise = ctx.db.get(ownerUserId)
+    ownerCache.set(ownerUserId, ownerPromise)
+    return ownerPromise
+  }
+
+  const filtered = await Promise.all(
+    skills.map(async (skill) => {
+      const owner = await getOwner(skill.ownerUserId)
+      if (!owner || owner.deletedAt || owner.deactivatedAt) return null
+      return skill
+    }),
+  )
+
+  return filtered.filter((skill): skill is Doc<'skills'> => skill !== null)
 }
 
 function toPublicSkillListVersion(
@@ -1165,6 +1190,7 @@ export const getBySlug = query({
       ? await ctx.db.get(skill.latestVersionId)
       : null
     const owner = toPublicUser(await ctx.db.get(skill.ownerUserId))
+    if (!owner) return null
     const badges = await getSkillBadgeMap(ctx, skill._id)
 
     const forkOfSkill = skill.forkOf?.skillId
@@ -1821,7 +1847,8 @@ export const list = query({
       if (args.batch === 'highlighted') {
         const skills = await loadHighlightedSkills(ctx, limit)
         const withBadges = await attachBadgesToSkills(ctx, skills)
-        return withBadges
+        const visibleSkills = await filterSkillsByActiveOwner(ctx, withBadges)
+        return visibleSkills
           .map((skill) => toPublicSkill(skill))
           .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
       }
@@ -1834,7 +1861,8 @@ export const list = query({
         .filter((skill) => !skill.softDeletedAt)
         .slice(0, limit)
       const withBadges = await attachBadgesToSkills(ctx, filtered)
-      return withBadges
+      const visibleSkills = await filterSkillsByActiveOwner(ctx, withBadges)
+      return visibleSkills
         .map((skill) => toPublicSkill(skill))
         .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
     }
@@ -1888,7 +1916,8 @@ export const list = query({
           .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
       }
 
-      return withBadges
+      const visibleSkills = await filterSkillsByActiveOwner(ctx, withBadges)
+      return visibleSkills
         .map((skill) => toPublicSkill(skill))
         .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
     }
@@ -1897,7 +1926,8 @@ export const list = query({
       .filter((skill) => !skill.softDeletedAt)
       .slice(0, limit)
     const withBadges = await attachBadgesToSkills(ctx, filtered)
-    return withBadges
+    const visibleSkills = await filterSkillsByActiveOwner(ctx, withBadges)
+    return visibleSkills
       .map((skill) => toPublicSkill(skill))
       .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
   },
@@ -1934,7 +1964,10 @@ export const listWithLatest = query({
       entries = await ctx.db.query('skills').order('desc').take(takeLimit)
     }
 
-    const filtered = entries.filter((skill) => !skill.softDeletedAt)
+    const filtered = await filterSkillsByActiveOwner(
+      ctx,
+      entries.filter((skill) => !skill.softDeletedAt),
+    )
     const withBadges = await attachBadgesToSkills(ctx, filtered)
     const ordered =
       args.batch === 'highlighted'

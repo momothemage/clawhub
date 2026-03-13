@@ -953,7 +953,11 @@ describe('httpApiV1 handlers', () => {
   it('lists versions', async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ('slug' in args) {
-        return { _id: 'skills:1', slug: 'demo', displayName: 'Demo' }
+        return {
+          skill: { _id: 'skills:1', slug: 'demo', displayName: 'Demo' },
+          latestVersion: null,
+          owner: { handle: 'owner', displayName: 'Owner', image: null },
+        }
       }
       if ('skillId' in args && 'cursor' in args) {
         return {
@@ -981,10 +985,25 @@ describe('httpApiV1 handlers', () => {
     expect(json.items[0].version).toBe('1.0.0')
   })
 
+  it('returns 404 for versions when the owner is banned', async () => {
+    const runQuery = vi.fn(async () => null)
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/versions?limit=1'),
+    )
+    expect(response.status).toBe(404)
+    expect(await response.text()).toBe('Skill not found')
+  })
+
   it('returns version detail', async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ('slug' in args) {
-        return { _id: 'skills:1', slug: 'demo', displayName: 'Demo' }
+        return {
+          skill: { _id: 'skills:1', slug: 'demo', displayName: 'Demo' },
+          latestVersion: null,
+          owner: { handle: 'owner', displayName: 'Owner', image: null },
+        }
       }
       if ('skillId' in args && 'version' in args) {
         return {
@@ -1015,10 +1034,25 @@ describe('httpApiV1 handlers', () => {
     expect(json.version.files[0].path).toBe('SKILL.md')
   })
 
+  it('returns 404 for version detail when the owner is banned', async () => {
+    const runQuery = vi.fn(async () => null)
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/versions/1.0.0'),
+    )
+    expect(response.status).toBe(404)
+    expect(await response.text()).toBe('Skill not found')
+  })
+
   it('returns version detail security from vt analysis', async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ('slug' in args) {
-        return { _id: 'skills:1', slug: 'demo', displayName: 'Demo' }
+        return {
+          skill: { _id: 'skills:1', slug: 'demo', displayName: 'Demo' },
+          latestVersion: null,
+          owner: { handle: 'owner', displayName: 'Owner', image: null },
+        }
       }
       if ('skillId' in args && 'version' in args) {
         return {
@@ -1052,7 +1086,11 @@ describe('httpApiV1 handlers', () => {
   it('keeps hasWarnings true when llm dimensions include non-ok ratings', async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ('slug' in args) {
-        return { _id: 'skills:1', slug: 'demo', displayName: 'Demo' }
+        return {
+          skill: { _id: 'skills:1', slug: 'demo', displayName: 'Demo' },
+          latestVersion: null,
+          owner: { handle: 'owner', displayName: 'Owner', image: null },
+        }
       }
       if ('skillId' in args && 'version' in args) {
         return {

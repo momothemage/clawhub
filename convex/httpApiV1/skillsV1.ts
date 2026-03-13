@@ -653,19 +653,19 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
   }
 
   if (second === 'versions' && segments.length === 2) {
-    const skill = await ctx.runQuery(internal.skills.getSkillBySlugInternal, { slug })
-    if (!skill || skill.softDeletedAt) return text('Skill not found', 404, rate.headers)
+    const skillResult = (await ctx.runQuery(api.skills.getBySlug, { slug })) as GetBySlugResult
+    if (!skillResult?.skill) return text('Skill not found', 404, rate.headers)
 
     const url = new URL(request.url)
     const limit = toOptionalNumber(url.searchParams.get('limit'))
     const cursor = url.searchParams.get('cursor')?.trim() || undefined
-    const result = (await ctx.runQuery(api.skills.listVersionsPage, {
-      skillId: skill._id,
+    const versionsResult = (await ctx.runQuery(api.skills.listVersionsPage, {
+      skillId: skillResult.skill._id,
       limit,
       cursor,
     })) as ListVersionsResult
 
-    const items = result.items
+    const items = versionsResult.items
       .filter((version) => !version.softDeletedAt)
       .map((version) => ({
         version: version.version,
@@ -674,15 +674,15 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
         changelogSource: version.changelogSource ?? null,
       }))
 
-    return json({ items, nextCursor: result.nextCursor ?? null }, 200, rate.headers)
+    return json({ items, nextCursor: versionsResult.nextCursor ?? null }, 200, rate.headers)
   }
 
   if (second === 'versions' && third && segments.length === 3) {
-    const skill = await ctx.runQuery(internal.skills.getSkillBySlugInternal, { slug })
-    if (!skill || skill.softDeletedAt) return text('Skill not found', 404, rate.headers)
+    const skillResult = (await ctx.runQuery(api.skills.getBySlug, { slug })) as GetBySlugResult
+    if (!skillResult?.skill) return text('Skill not found', 404, rate.headers)
 
     const version = await ctx.runQuery(api.skills.getVersionBySkillAndVersion, {
-      skillId: skill._id,
+      skillId: skillResult.skill._id,
       version: third,
     })
     if (!version) return text('Version not found', 404, rate.headers)
@@ -691,7 +691,7 @@ export async function skillsGetRouterV1Handler(ctx: ActionCtx, request: Request)
 
     return json(
       {
-        skill: { slug: skill.slug, displayName: skill.displayName },
+        skill: { slug: skillResult.skill.slug, displayName: skillResult.skill.displayName },
         version: {
           version: version.version,
           createdAt: version.createdAt,

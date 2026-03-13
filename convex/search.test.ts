@@ -274,6 +274,37 @@ describe('search helpers', () => {
     expect(result[0].skill.slug).toBe('active-skill')
   })
 
+  it('excludes skills whose owners are deleted or banned from vector search results', async () => {
+    const result = await hydrateResultsHandler(
+      {
+        db: {
+          get: vi.fn(async (id: string) => {
+            if (id === 'skillEmbeddings:1') {
+              return { _id: 'skillEmbeddings:1', skillId: 'skills:1', versionId: 'skillVersions:1' }
+            }
+            if (id === 'skills:1') {
+              return {
+                ...makeSkillDoc({ id: 'skills:1', slug: 'ownerless-skill', displayName: 'Ownerless' }),
+                softDeletedAt: undefined,
+              }
+            }
+            if (id === 'users:owner') {
+              return { _id: 'users:owner', handle: 'owner', deletedAt: 1700000000000 }
+            }
+            if (id === 'skillVersions:1') return { _id: 'skillVersions:1', version: '1.0.0' }
+            return null
+          }),
+          query: vi.fn(() => ({
+            withIndex: () => ({ unique: vi.fn().mockResolvedValue(null) }),
+          })),
+        },
+      },
+      { embeddingIds: ['skillEmbeddings:1'] },
+    )
+
+    expect(result).toHaveLength(0)
+  })
+
   it('excludes soft-deleted exact slug match from lexical fallback (#29)', async () => {
     const deletedSkill = makeSkillDoc({
       id: 'skills:deleted',

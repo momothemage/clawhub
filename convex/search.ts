@@ -18,10 +18,13 @@ function makeOwnerInfoGetter(ctx: Pick<QueryCtx, 'db'>) {
   return (ownerUserId: Id<'users'>) => {
     const cached = ownerCache.get(ownerUserId)
     if (cached) return cached
-    const ownerPromise = ctx.db.get(ownerUserId).then((ownerDoc) => ({
-      handle: ownerDoc?.handle ?? (ownerDoc?._id ? String(ownerDoc._id) : null),
-      owner: toPublicUser(ownerDoc),
-    }))
+    const ownerPromise = ctx.db.get(ownerUserId).then((ownerDoc) => {
+      const owner = toPublicUser(ownerDoc)
+      return {
+        handle: owner?.handle ?? owner?.name ?? null,
+        owner,
+      }
+    })
     ownerCache.set(ownerUserId, ownerPromise)
     return ownerPromise
   }
@@ -254,7 +257,7 @@ export const hydrateResults = internalQuery({
           ? { handle: digestOwner.ownerHandle, owner: digestOwner.owner }
           : await getOwnerInfo(skill.ownerUserId)
         const publicSkill = toPublicSkill(skill)
-        if (!publicSkill) return null
+        if (!publicSkill || !ownerInfo.owner) return null
         return {
           embeddingId,
           skill: publicSkill,
@@ -333,7 +336,7 @@ export const lexicalFallbackSkills = internalQuery({
           ? { handle: digestOwner.ownerHandle, owner: digestOwner.owner }
           : await getOwnerInfo(skill.ownerUserId)
         const publicSkill = toPublicSkill(skill)
-        if (!publicSkill) return null
+        if (!publicSkill || !ownerInfo.owner) return null
         return {
           skill: publicSkill,
           version: null as Doc<'skillVersions'> | null,

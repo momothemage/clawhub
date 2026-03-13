@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 - Unreleased
+
+### Fixed
+- Visibility/API: prevent skills owned by deleted/banned users from showing up in public detail pages, browse/search results, or version API routes.
 
 ## 0.8.0 - 2026-03-13
 

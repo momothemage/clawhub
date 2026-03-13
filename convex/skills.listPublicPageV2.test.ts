@@ -215,6 +215,46 @@ describe('skills.listPublicPageV2', () => {
     expect(paginateMock).toHaveBeenCalledTimes(1)
   })
 
+  it('filters out skills whose owners are deleted or banned', async () => {
+    const active = makeSkill('skills:active', 'active', 'users:active', 'skillVersions:1')
+    const banned = makeSkill('skills:banned', 'banned', 'users:banned', 'skillVersions:2')
+    const paginateMock = vi.fn().mockResolvedValueOnce({
+      page: [banned, active],
+      continueCursor: 'after-active',
+      isDone: false,
+      pageStatus: null,
+      splitCursor: null,
+    })
+    const withIndexMock = vi.fn(() => ({
+      order: vi.fn(() => ({ paginate: paginateMock })),
+    }))
+    const ctx = {
+      db: {
+        query: vi.fn(() => ({
+          withIndex: withIndexMock,
+        })),
+        get: vi.fn(async (id: string) => {
+          if (id === 'users:active') return makeUser(id)
+          if (id === 'users:banned') return { ...makeUser(id), deletedAt: 123 }
+          if (id.startsWith('skillVersions:')) return makeVersion(id)
+          return null
+        }),
+      },
+    }
+
+    const result = await listPublicPageV2Handler(ctx, {
+      paginationOpts: { cursor: null, numItems: 25 },
+      sort: 'downloads',
+      dir: 'desc',
+      highlightedOnly: false,
+      nonSuspiciousOnly: false,
+    })
+
+    expect(result.page).toHaveLength(1)
+    expect(result.page[0]?.skill.slug).toBe('active')
+    expect(result.continueCursor).toBe('after-active')
+  })
+
   it('returns empty isDone page when cursor is stale', async () => {
     const paginateMock = vi
       .fn()
