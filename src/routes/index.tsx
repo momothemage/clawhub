@@ -37,6 +37,7 @@ function SkillsHome() {
     convex
       .query(api.skills.listHighlightedPublic, { limit: 6 })
       .then((r) => setHighlighted(r as SkillPageEntry[]))
+      .catch(() => {})
     convex
       .query(api.skills.listPublicPageV2, {
         paginationOpts: { cursor: null, numItems: 12 },
@@ -45,6 +46,7 @@ function SkillsHome() {
         nonSuspiciousOnly: true,
       })
       .then((r) => setPopular((r as { page: SkillPageEntry[] }).page))
+      .catch(() => {})
   }, [])
 
   return (
