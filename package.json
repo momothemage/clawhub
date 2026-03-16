@@ -20,6 +20,7 @@
     "preview": "bun --bun vite preview",
     "test": "vitest run",
     "test:e2e": "vitest run -c vitest.e2e.config.ts",
+    "test:e2e:prod-http": "vitest run -c vitest.e2e.config.ts e2e/prod-http-smoke.e2e.test.ts",
     "test:e2e:local": "bash scripts/run-playwright-local.sh",
     "test:pw": "playwright test",
     "test:watch": "vitest",

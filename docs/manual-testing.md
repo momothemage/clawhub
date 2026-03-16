@@ -21,6 +21,14 @@ read_when:
 ## Search
 - `bun clawhub search gif --limit 5`
 
+## Prod HTTP smoke
+- Public prod smoke via Vitest:
+  - `bun run test:e2e:prod-http`
+- Optional overrides:
+  - `CLAWHUB_E2E_SITE=https://clawhub.ai`
+  - `CLAWHUB_E2E_SKILL_OWNER=steipete`
+  - `CLAWHUB_E2E_SKILL_SLUG=gifgrep`
+
 ## Install / list / update
 - `mkdir -p /tmp/clawhub-manual && cd /tmp/clawhub-manual`
 - `bunx clawhub@beta install gifgrep --force`
