@@ -338,7 +338,7 @@ packageCmd
   .command("explore")
   .description("Browse published packages and plugins")
   .argument("[query...]", "Optional search query")
-  .option("--family <family>", "skill|code-plugin|bundle-plugin")
+  .option("--family <family>", "code-plugin|bundle-plugin")
   .option("--official", "Only official packages")
   .option("--executes-code", "Only packages that execute code")
   .option(

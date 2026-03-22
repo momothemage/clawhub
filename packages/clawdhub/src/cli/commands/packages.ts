@@ -39,7 +39,7 @@ type PackageInspectOptions = {
 };
 
 type PackageExploreOptions = {
-  family?: PackageFamily;
+  family?: Exclude<PackageFamily, "skill">;
   official?: boolean;
   executesCode?: boolean;
   limit?: number;
@@ -83,6 +83,9 @@ export async function cmdExplorePackages(
   options: PackageExploreOptions = {},
 ) {
   const trimmedQuery = query.trim();
+  if ((options.family as PackageFamily | undefined) === "skill") {
+    fail("Skills are browsed via the skills API, not clawhub package explore");
+  }
   const token = await getOptionalAuthToken();
   const registry = await getRegistry(opts, { cache: true });
   const spinner = createSpinner(trimmedQuery ? "Searching packages" : "Listing packages");
@@ -124,7 +127,6 @@ export async function cmdExplorePackages(
           ? ApiRoutes.bundlePlugins
           : ApiRoutes.packages;
     const url = registryUrl(route, registry);
-    if (options.family === "skill") url.searchParams.set("family", "skill");
     url.searchParams.set("limit", String(limit));
     if (options.official) url.searchParams.set("isOfficial", "true");
     if (typeof options.executesCode === "boolean") {

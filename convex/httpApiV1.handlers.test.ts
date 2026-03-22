@@ -2267,7 +2267,7 @@ describe("httpApiV1 handlers", () => {
     expect(response.headers.get("RateLimit-Limit")).toBeTruthy();
   });
 
-  it("packages list forwards family=skill on the generic route", async () => {
+  it("packages list rejects family=skill on the generic route", async () => {
     const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
     const runMutation = vi.fn().mockResolvedValue(okRate());
 
@@ -2276,14 +2276,23 @@ describe("httpApiV1 handlers", () => {
       new Request("https://example.com/api/v1/packages?family=skill&limit=7"),
     );
 
-    expect(response.status).toBe(200);
-    expect(runQuery).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        family: "skill",
-        paginationOpts: { cursor: null, numItems: 7 },
-      }),
+    expect(response.status).toBe(400);
+    await expect(response.text()).resolves.toContain("/api/v1/skills");
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
+  it("packages search rejects family=skill on the generic route", async () => {
+    const runQuery = vi.fn();
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages/search?q=demo&family=skill"),
     );
+
+    expect(response.status).toBe(400);
+    await expect(response.text()).resolves.toContain("/api/v1/skills");
+    expect(runQuery).not.toHaveBeenCalled();
   });
 
   it("packages detail hides private packages from anonymous requests", async () => {

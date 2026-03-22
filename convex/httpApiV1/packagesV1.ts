@@ -44,7 +44,7 @@ async function runActionRef<T>(ctx: ActionCtx, ref: unknown, args: unknown): Pro
 }
 
 type PackageListQueryArgs = {
-  family?: "skill" | "code-plugin" | "bundle-plugin";
+  family?: "code-plugin" | "bundle-plugin";
   channel?: "official" | "community" | "private";
   isOfficial?: boolean;
   executesCode?: boolean;
@@ -173,9 +173,12 @@ async function listPackages(ctx: ActionCtx, request: Request, family?: PackageLi
   const capabilityTag = url.searchParams.get("capabilityTag")?.trim() || undefined;
   const isOfficialRaw = url.searchParams.get("isOfficial");
   const executesCodeRaw = url.searchParams.get("executesCode");
+  if (familyRaw === "skill") {
+    return text("Use /api/v1/skills for skill browsing", 400, rate.headers);
+  }
   const effectiveFamily =
     family ??
-    (familyRaw === "skill" || familyRaw === "code-plugin" || familyRaw === "bundle-plugin"
+    (familyRaw === "code-plugin" || familyRaw === "bundle-plugin"
       ? familyRaw
       : undefined);
   const result = await runQueryRef<{
@@ -287,6 +290,9 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
     const queryText = url.searchParams.get("q")?.trim() ?? "";
     const limit = Math.max(1, Math.min(toOptionalNumber(url.searchParams.get("limit")) ?? 20, 100));
     const familyRaw = url.searchParams.get("family");
+    if (familyRaw === "skill") {
+      return text("Use /api/v1/skills for skill browsing", 400, rate.headers);
+    }
     const channelRaw = url.searchParams.get("channel");
     const isOfficialRaw = url.searchParams.get("isOfficial");
     const executesCodeRaw = url.searchParams.get("executesCode");
@@ -295,7 +301,7 @@ export async function packagesGetRouterV1Handler(ctx: ActionCtx, request: Reques
       query: queryText,
       limit,
       family:
-        familyRaw === "skill" || familyRaw === "code-plugin" || familyRaw === "bundle-plugin"
+        familyRaw === "code-plugin" || familyRaw === "bundle-plugin"
           ? familyRaw
           : undefined,
       channel:

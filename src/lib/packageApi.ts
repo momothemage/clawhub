@@ -145,7 +145,7 @@ async function fetchJson<T>(url: URL): Promise<T> {
 export async function fetchPackages(params: {
   q?: string;
   cursor?: string;
-  family?: "skill" | "code-plugin" | "bundle-plugin";
+  family?: "code-plugin" | "bundle-plugin";
   isOfficial?: boolean;
   executesCode?: boolean;
   capabilityTag?: string;
@@ -173,7 +173,6 @@ export async function fetchPackages(params: {
         ? ApiRoutes.bundlePlugins
         : ApiRoutes.packages;
   const url = await packageApiUrl(route);
-  if (params.family === "skill") url.searchParams.set("family", "skill");
   if (params.cursor) url.searchParams.set("cursor", params.cursor);
   if (typeof params.limit === "number") url.searchParams.set("limit", String(params.limit));
   if (typeof params.isOfficial === "boolean") {

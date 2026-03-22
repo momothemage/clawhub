@@ -11,7 +11,7 @@ let loaderDataMock: {
   items: Array<{
     name: string;
     displayName: string;
-    family: "skill" | "code-plugin" | "bundle-plugin";
+    family: "code-plugin" | "bundle-plugin";
     channel: "official" | "community" | "private";
     isOfficial: boolean;
     executesCode?: boolean;
@@ -52,6 +52,7 @@ async function loadRoute() {
     __config: {
       loader?: (args: { deps: Record<string, unknown> }) => Promise<unknown>;
       component?: ComponentType;
+      validateSearch?: (search: Record<string, unknown>) => Record<string, unknown>;
     };
   };
 }
@@ -64,6 +65,19 @@ describe("packages route", () => {
     loaderDataMock = { items: [], nextCursor: null };
   });
 
+  it("drops unsupported skill family filters from search state", async () => {
+    const route = await loadRoute();
+    const validateSearch = route.__config.validateSearch as (search: Record<string, unknown>) => Record<string, unknown>;
+
+    expect(validateSearch({ family: "skill", q: "demo" })).toEqual({
+      family: undefined,
+      q: "demo",
+      cursor: undefined,
+      official: undefined,
+      executesCode: undefined,
+    });
+  });
+
   it("forwards opaque cursors through the loader", async () => {
     fetchPackagesMock.mockResolvedValue({ items: [], nextCursor: "cursor:next" });
     const route = await loadRoute();
@@ -74,14 +88,14 @@ describe("packages route", () => {
     await loader({
       deps: {
         cursor: "cursor:current",
-        family: "skill",
+        family: "code-plugin",
       },
     });
 
     expect(fetchPackagesMock).toHaveBeenCalledWith(
       expect.objectContaining({
         cursor: "cursor:current",
-        family: "skill",
+        family: "code-plugin",
         limit: 50,
       }),
     );
@@ -120,28 +134,12 @@ describe("packages route", () => {
     });
   });
 
-  it("labels skill entries as skills in the browse grid", async () => {
-    loaderDataMock = {
-      items: [
-        {
-          name: "demo-skill",
-          displayName: "Demo Skill",
-          family: "skill",
-          channel: "community",
-          isOfficial: false,
-          executesCode: false,
-          createdAt: 1,
-          updatedAt: 1,
-        },
-      ],
-      nextCursor: null,
-    };
+  it("does not render a dead Skills family option", async () => {
     const route = await loadRoute();
     const Component = route.__config.component as ComponentType;
 
     render(<Component />);
 
-    expect(screen.getAllByText("Skill")).toHaveLength(2);
-    expect(screen.queryByText("Bundle only")).toBeNull();
+    expect(screen.queryByRole("option", { name: "Skills" })).toBeNull();
   });
 });
