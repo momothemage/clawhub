@@ -645,7 +645,6 @@ async function listPackageFiles(root: string) {
   const absRoot = resolve(root);
   const ig = ignore();
   ig.add([".git/", "node_modules/", `${DOT_DIR}/`, `${LEGACY_DOT_DIR}/`]);
-  await addIgnoreFile(ig, join(absRoot, ".gitignore"));
   await addIgnoreFile(ig, join(absRoot, DOT_IGNORE));
   await addIgnoreFile(ig, join(absRoot, LEGACY_DOT_IGNORE));
   await walk(absRoot, async (absPath) => {

@@ -190,7 +190,8 @@ describe("fetchPackages", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://app.example/api/v1/packages/private-plugin");
   });
 
-  it("falls back to the env base URL when SSR request context is unavailable", async () => {
+  it("falls back to the site URL when SSR request context is unavailable", async () => {
+    vi.stubEnv("VITE_CONVEX_SITE_URL", "https://app.example");
     vi.stubEnv("VITE_CONVEX_URL", "https://registry.example");
     getRequestUrlMock.mockImplementation(() => {
       throw new Error("no request context");
@@ -204,7 +205,7 @@ describe("fetchPackages", () => {
       limit: 12,
     });
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://registry.example/api/v1/bundle-plugins?limit=12");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://app.example/api/v1/bundle-plugins?limit=12");
   });
 
   it("throws package detail errors for non-404 failures", async () => {

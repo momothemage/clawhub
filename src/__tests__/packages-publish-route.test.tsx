@@ -271,7 +271,7 @@ describe("packages publish route", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/Ignored 2 files via ignore rules\./)).toBeTruthy();
+      expect(screen.getByText(/Ignored 1 files via ignore rules\./)).toBeTruthy();
     });
 
     fireEvent.change(screen.getByPlaceholderText("Changelog"), {
@@ -290,12 +290,13 @@ describe("packages publish route", () => {
       expect(publishRelease).toHaveBeenCalledTimes(1);
     });
 
-    expect(generateUploadUrl).toHaveBeenCalledTimes(4);
+    expect(generateUploadUrl).toHaveBeenCalledTimes(5);
     const payload = publishRelease.mock.calls[0]?.[0]?.payload as {
       files: Array<{ path: string }>;
     };
     expect(payload.files.map((file) => file.path).sort()).toEqual([
       ".gitignore",
+      "dist/index.js",
       "openclaw.plugin.json",
       "package.json",
       "src/index.js",

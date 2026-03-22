@@ -172,6 +172,7 @@ describe("package commands", () => {
         }),
         "utf8",
       );
+      await writeFile(join(folder, ".gitignore"), "dist/\n", "utf8");
       await writeFile(join(folder, "openclaw.plugin.json"), JSON.stringify({ id: "demo.plugin" }), "utf8");
       await writeFile(join(folder, "dist", "index.js"), "export const demo = true;\n", "utf8");
 
@@ -206,6 +207,7 @@ describe("package commands", () => {
       });
       const files = publishForm.getAll("files") as Array<Blob & { name?: string }>;
       expect(files.map((file) => String(file.name ?? "")).sort()).toEqual([
+        ".gitignore",
         "dist/index.js",
         "openclaw.plugin.json",
         "package.json",

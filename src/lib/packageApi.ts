@@ -4,7 +4,7 @@ import type {
   PackageVerificationSummary,
 } from "clawhub-schema";
 import { ApiRoutes } from "clawhub-schema";
-import { getRequiredRuntimeEnv } from "./runtimeEnv";
+import { getRequiredRuntimeEnv, getRuntimeEnv } from "./runtimeEnv";
 
 export type PackageListItem = {
   name: string;
@@ -93,7 +93,8 @@ async function packageApiUrl(path: string) {
       // Fall through to env-based base URL when no request context exists.
     }
   }
-  const base = getRequiredRuntimeEnv("VITE_CONVEX_URL");
+  const base =
+    getRuntimeEnv("VITE_CONVEX_SITE_URL") ?? getRequiredRuntimeEnv("VITE_CONVEX_URL");
   return new URL(normalizedPath, base);
 }
 

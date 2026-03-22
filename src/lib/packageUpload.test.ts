@@ -23,10 +23,10 @@ describe("normalizePackageUploadPath", () => {
 });
 
 describe("buildPackageUploadEntries", () => {
-  it("filters builtin and ignore-file package paths before upload", async () => {
+  it("filters builtin and package-ignore-file paths before upload", async () => {
     const filtered = await filterIgnoredPackageFiles([
       new File(['{}'], 'demo-plugin/package.json', { type: 'application/json' }),
-      new File(['dist/\nsecret.txt\n'], 'demo-plugin/.gitignore', { type: 'text/plain' }),
+      new File(['dist/\nsecret.txt\n'], 'demo-plugin/.clawhubignore', { type: 'text/plain' }),
       new File(['ignored'], 'demo-plugin/node_modules/pkg/index.js', { type: 'text/javascript' }),
       new File(['ignored'], 'demo-plugin/.git/config', { type: 'text/plain' }),
       new File(['ignored'], 'demo-plugin/dist/index.js', { type: 'text/javascript' }),
@@ -36,7 +36,7 @@ describe("buildPackageUploadEntries", () => {
 
     expect(filtered.files.map((file) => file.name)).toEqual([
       'demo-plugin/package.json',
-      'demo-plugin/.gitignore',
+      'demo-plugin/.clawhubignore',
       'demo-plugin/src/index.js',
     ]);
     expect(filtered.ignoredPaths).toEqual([
@@ -45,6 +45,23 @@ describe("buildPackageUploadEntries", () => {
       'dist/index.js',
       'secret.txt',
     ]);
+  });
+
+  it("does not apply repo .gitignore rules to package uploads", async () => {
+    const filtered = await filterIgnoredPackageFiles([
+      new File(['{}'], 'demo-plugin/package.json', { type: 'application/json' }),
+      new File(['dist/\nsecret.txt\n'], 'demo-plugin/.gitignore', { type: 'text/plain' }),
+      new File(['kept'], 'demo-plugin/dist/index.js', { type: 'text/javascript' }),
+      new File(['kept'], 'demo-plugin/secret.txt', { type: 'text/plain' }),
+    ]);
+
+    expect(filtered.files.map((file) => file.name)).toEqual([
+      'demo-plugin/package.json',
+      'demo-plugin/.gitignore',
+      'demo-plugin/dist/index.js',
+      'demo-plugin/secret.txt',
+    ]);
+    expect(filtered.ignoredPaths).toEqual([]);
   });
 
   it("requests a fresh upload url for each file", async () => {

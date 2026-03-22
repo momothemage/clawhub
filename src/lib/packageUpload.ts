@@ -24,7 +24,7 @@ const DOT_DIR = '.clawhub';
 const LEGACY_DOT_DIR = '.clawdhub';
 const DOT_IGNORE = '.clawhubignore';
 const LEGACY_DOT_IGNORE = '.clawdhubignore';
-const PACKAGE_IGNORE_FILES = new Set(['.gitignore', DOT_IGNORE, LEGACY_DOT_IGNORE]);
+const PACKAGE_IGNORE_FILES = new Set([DOT_IGNORE, LEGACY_DOT_IGNORE]);
 const DEFAULT_PACKAGE_IGNORE_PATTERNS = ['.git/', 'node_modules/', `${DOT_DIR}/`, `${LEGACY_DOT_DIR}/`];
 
 export function normalizePackageUploadPath(
