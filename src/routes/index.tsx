@@ -1,15 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useAction, useQuery } from "convex/react";
-import {
-  Database,
-  GitBranch,
-  MessageSquare,
-  Package,
-  Plug,
-  Shield,
-  Wrench,
-  Zap,
-} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../convex/_generated/api";
 import { SkillCard } from "../components/SkillCard";
@@ -20,7 +10,6 @@ import { SoulStatsTripletLine } from "../components/SoulStats";
 import { UserBadge } from "../components/UserBadge";
 import { convexHttp } from "../convex/client";
 import { getSkillBadges } from "../lib/badges";
-import { SKILL_CATEGORIES } from "../lib/categories";
 import { formatCompactStat } from "../lib/numberFormat";
 import type { PublicPublisher, PublicSkill, PublicSoul } from "../lib/publicUser";
 import { getSiteMode } from "../lib/site";
@@ -28,17 +17,6 @@ import { getSiteMode } from "../lib/site";
 export const Route = createFileRoute("/")({
   component: Home,
 });
-
-const CATEGORY_ICONS: Record<string, React.ReactNode> = {
-  "mcp-tools": <Plug size={20} />,
-  prompts: <MessageSquare size={20} />,
-  workflows: <GitBranch size={20} />,
-  "dev-tools": <Wrench size={20} />,
-  data: <Database size={20} />,
-  security: <Shield size={20} />,
-  automation: <Zap size={20} />,
-  other: <Package size={20} />,
-};
 
 function Home() {
   const mode = getSiteMode();
@@ -127,6 +105,10 @@ function SkillsHome() {
               Publish yours
             </Link>
           </div>
+          <p className="home-hero-explainer">
+            Skills are portable bundles of instructions, prompts, and tools
+            that give AI agents new capabilities. Install with one command.
+          </p>
         </div>
       </section>
 
@@ -251,31 +233,33 @@ function SkillsHome() {
         </div>
       </section>
 
-      {/* Browse by category */}
+      {/* Quick links */}
       <section className="home-section">
-        <h2 className="home-section-title">Browse by category</h2>
-        <div className="category-grid">
-          {SKILL_CATEGORIES.map((cat) => (
-            <Link
-              key={cat.slug}
-              to="/skills"
-              search={{
-                q: cat.keywords[0] ?? undefined,
-                sort: undefined,
-                dir: undefined,
-                highlighted: undefined,
-                nonSuspicious: true,
-                view: undefined,
-                focus: undefined,
-              }}
-              className="category-card"
-            >
-              <span className="category-card-icon">
-                {CATEGORY_ICONS[cat.slug] ?? <Package size={20} />}
-              </span>
-              <span className="category-card-label">{cat.label}</span>
-            </Link>
-          ))}
+        <div className="home-quick-links">
+          <Link
+            to="/skills"
+            search={{ q: undefined, sort: "stars" as const, dir: "desc" as const, highlighted: undefined, nonSuspicious: true, view: undefined, focus: undefined }}
+            className="home-quick-link"
+          >
+            Most starred
+          </Link>
+          <Link
+            to="/skills"
+            search={{ q: undefined, sort: "newest" as const, dir: undefined, highlighted: undefined, nonSuspicious: true, view: undefined, focus: undefined }}
+            className="home-quick-link"
+          >
+            New this week
+          </Link>
+          <Link to="/plugins" className="home-quick-link">
+            Browse plugins
+          </Link>
+          <Link
+            to="/skills"
+            search={{ q: undefined, sort: undefined, dir: undefined, highlighted: true, nonSuspicious: undefined, view: undefined, focus: undefined }}
+            className="home-quick-link"
+          >
+            Staff picks
+          </Link>
         </div>
       </section>
     </main>

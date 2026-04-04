@@ -157,6 +157,19 @@ export function SkillsIndex() {
               {model.isLoadingSkills
                 ? "Loading..."
                 : `${model.sorted.length} results`}
+              {(model.hasQuery || model.highlightedOnly || model.nonSuspiciousOnly) ? (
+                <button
+                  className="browse-clear-btn"
+                  type="button"
+                  onClick={() => {
+                    model.onQueryChange("");
+                    if (model.highlightedOnly) model.onToggleHighlighted();
+                    if (model.nonSuspiciousOnly) model.onToggleNonSuspicious();
+                  }}
+                >
+                  Clear
+                </button>
+              ) : null}
             </span>
             <div className="browse-view-toggle">
               <button

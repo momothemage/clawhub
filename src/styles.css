@@ -5,15 +5,15 @@
 
 :root {
   color-scheme: light dark;
-  --bg: #f8f2ed;
-  --bg-soft: #fdf7f2;
-  --bg-glow-1: #ffe1d4;
-  --bg-glow-2: #ffe8d8;
+  --bg: #fafafa;
+  --bg-soft: #f5f5f5;
+  --bg-glow-1: #f0f0f0;
+  --bg-glow-2: #f0f0f0;
   --surface: #ffffff;
-  --surface-muted: #f7efe9;
-  --nav-bg: rgba(248, 242, 237, 0.88);
-  --ink: #2a1f19;
-  --ink-soft: #6b5549;
+  --surface-muted: #f5f5f5;
+  --nav-bg: rgba(255, 255, 255, 0.92);
+  --ink: #1a1a1a;
+  --ink-soft: #666666;
   --accent: #e65c46;
   --accent-deep: #bf3f30;
   --seafoam: #209e92;
@@ -24,10 +24,10 @@
   --diff-diagonal: #22222233;
   --diff-scrollbar-rgb: 107, 95, 86;
   --gold: #e7bb67;
-  --line: rgba(42, 31, 25, 0.14);
-  --border-ui: rgba(191, 63, 48, 0.28);
-  --border-ui-hover: rgba(191, 63, 48, 0.42);
-  --border-ui-active: rgba(191, 63, 48, 0.62);
+  --line: rgba(0, 0, 0, 0.1);
+  --border-ui: rgba(0, 0, 0, 0.2);
+  --border-ui-hover: rgba(0, 0, 0, 0.3);
+  --border-ui-active: rgba(0, 0, 0, 0.5);
   --shadow: 0 22px 52px rgba(44, 28, 20, 0.11);
 
   /* Spacing scale */
@@ -66,15 +66,15 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #14100d;
-  --bg-soft: #1d1713;
-  --bg-glow-1: #4b211b;
-  --bg-glow-2: #3a2018;
-  --surface: #241b16;
-  --surface-muted: #2f241d;
-  --nav-bg: rgba(20, 16, 13, 0.88);
-  --ink: #f7eee8;
-  --ink-soft: #c8b3a6;
+  --bg: #111111;
+  --bg-soft: #1a1a1a;
+  --bg-glow-1: #1a1a1a;
+  --bg-glow-2: #1a1a1a;
+  --surface: #1e1e1e;
+  --surface-muted: #262626;
+  --nav-bg: rgba(17, 17, 17, 0.92);
+  --ink: #e5e5e5;
+  --ink-soft: #999999;
   --accent: #ff7357;
   --accent-deep: #e25640;
   --seafoam: #47c3b8;
@@ -85,10 +85,10 @@
   --diff-diagonal: #cccccc33;
   --diff-scrollbar-rgb: 200, 179, 166;
   --gold: #f3c97a;
-  --line: rgba(247, 235, 225, 0.16);
-  --border-ui: rgba(255, 115, 87, 0.4);
-  --border-ui-hover: rgba(255, 115, 87, 0.58);
-  --border-ui-active: rgba(255, 115, 87, 0.78);
+  --line: rgba(255, 255, 255, 0.12);
+  --border-ui: rgba(255, 255, 255, 0.2);
+  --border-ui-hover: rgba(255, 255, 255, 0.3);
+  --border-ui-active: rgba(255, 255, 255, 0.5);
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
 
@@ -5498,6 +5498,14 @@ html.theme-transition::view-transition-new(theme) {
   gap: var(--space-3);
 }
 
+.home-hero-explainer {
+  margin-top: var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--ink-soft);
+  line-height: 1.5;
+  max-width: 480px;
+}
+
 /* Home sections */
 
 .home-section {
@@ -5536,6 +5544,12 @@ html.theme-transition::view-transition-new(theme) {
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   overflow: hidden;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* Skill list item — dense, scannable row */
@@ -5612,39 +5626,26 @@ html.theme-transition::view-transition-new(theme) {
   gap: 3px;
 }
 
-/* Category grid */
+/* Quick links */
 
-.category-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+.home-quick-links {
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
-.category-card {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3);
+.home-quick-link {
+  display: inline-flex;
+  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: var(--ink-soft);
   text-decoration: none;
 }
 
-.category-card:hover {
+.home-quick-link:hover {
   border-color: var(--border-ui-hover);
-  background: var(--surface-muted);
-}
-
-.category-card-icon {
-  display: flex;
-  align-items: center;
-  color: var(--ink-soft);
-  flex-shrink: 0;
-}
-
-.category-card-label {
-  font-size: var(--fs-sm);
-  font-weight: 500;
   color: var(--ink);
 }
 
@@ -5769,7 +5770,7 @@ html.theme-transition::view-transition-new(theme) {
 .browse-layout {
   display: grid;
   grid-template-columns: 200px 1fr;
-  gap: var(--space-5);
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -5868,8 +5869,22 @@ html.theme-transition::view-transition-new(theme) {
 }
 
 .browse-results-count {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   font-size: var(--fs-sm);
   color: var(--ink-soft);
+}
+
+.browse-clear-btn {
+  all: unset;
+  font-size: var(--fs-xs);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.browse-clear-btn:hover {
+  text-decoration: underline;
 }
 
 .browse-view-toggle {
