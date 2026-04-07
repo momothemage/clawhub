@@ -1,14 +1,16 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "convex/react";
 import { Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../../../convex/_generated/api";
 import { UserListItem } from "../../components/UserListItem";
+import { convexHttp } from "../../convex/client";
 import type { PublicUser } from "../../lib/publicUser";
 
 type UserSearchState = {
   q?: string;
 };
+
+type UsersLoaderResult = { items: PublicUser[]; total: number };
 
 export const Route = createFileRoute("/users/")({
   validateSearch: (search): UserSearchState => ({
@@ -21,15 +23,26 @@ function UsersIndex() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const [query, setQuery] = useState(search.q ?? "");
+  const [result, setResult] = useState<UsersLoaderResult | undefined>(undefined);
+  const [loading, setLoading] = useState(true);
+
+  const fetchUsers = useCallback(async (q?: string) => {
+    setLoading(true);
+    try {
+      const data = await convexHttp.query(api.users.listPublic, {
+        limit: 48,
+        search: q,
+      });
+      setResult(data as UsersLoaderResult);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     setQuery(search.q ?? "");
-  }, [search.q]);
-
-  const result = useQuery(api.users.listPublic, {
-    limit: 48,
-    search: search.q,
-  }) as { items: PublicUser[]; total: number } | undefined;
+    void fetchUsers(search.q);
+  }, [search.q, fetchUsers]);
 
   const users = result?.items ?? [];
 
@@ -66,11 +79,11 @@ function UsersIndex() {
       <div className="browse-results">
         <div className="browse-results-toolbar">
           <span className="browse-results-count">
-            {result === undefined ? "Loading users..." : `${users.length} users`}
+            {loading ? "Loading users..." : `${users.length} users`}
           </span>
         </div>
 
-        {result === undefined ? (
+        {loading ? (
           <div className="card">
             <div className="loading-indicator">Loading users...</div>
           </div>

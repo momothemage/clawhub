@@ -443,10 +443,12 @@ async function queryUsersForPublicList(
   const scanLimit = normalizedSearch
     ? computeUserSearchScanLimit(args.limit)
     : clampInt(args.limit * 6, args.limit, MAX_USER_SEARCH_SCAN);
-  const scannedUsers = await ctx.db.query("users").order("desc").take(scanLimit);
-  const activeUsers = scannedUsers.filter(
-    (user) => !user.deletedAt && !user.deactivatedAt && Boolean(user.handle),
-  );
+  const scannedUsers = await ctx.db
+    .query("users")
+    .withIndex("by_active_handle", (q) => q.eq("deletedAt", undefined).eq("deactivatedAt", undefined))
+    .order("desc")
+    .take(scanLimit);
+  const activeUsers = scannedUsers.filter((user) => Boolean(user.handle));
   const result = buildUserSearchResults(activeUsers, normalizedSearch);
   return {
     items: result.items.slice(0, args.limit),

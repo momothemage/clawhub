@@ -40,7 +40,8 @@ const users = defineTable({
 })
   .index("email", ["email"])
   .index("phone", ["phone"])
-  .index("handle", ["handle"]);
+  .index("handle", ["handle"])
+  .index("by_active_handle", ["deletedAt", "deactivatedAt", "handle"]);
 
 const publishers = defineTable({
   kind: v.union(v.literal("user"), v.literal("org")),

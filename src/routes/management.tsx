@@ -331,12 +331,12 @@ function Management() {
                         const reason = window.prompt(
                           skill.softDeletedAt ? "Restore reason:" : "Hide reason:",
                         );
-                        if (reason === null) return;
+                        if (!reason?.trim()) return;
                         void setSoftDeleted({
                           skillId: skill._id,
                           deleted: !skill.softDeletedAt,
-                          reason,
-                        });
+                          reason: reason.trim(),
+                        }).catch((error) => window.alert(formatMutationError(error)));
                       }}
                     >
                       {skill.softDeletedAt ? "Restore" : "Hide"}
@@ -600,12 +600,12 @@ function Management() {
                         const reason = window.prompt(
                           skill.softDeletedAt ? "Restore reason:" : "Hide reason:",
                         );
-                        if (reason === null) return;
+                        if (!reason?.trim()) return;
                         void setSoftDeleted({
                           skillId: skill._id,
                           deleted: !skill.softDeletedAt,
-                          reason,
-                        });
+                          reason: reason.trim(),
+                        }).catch((error) => window.alert(formatMutationError(error)));
                       }}
                     >
                       {skill.softDeletedAt ? "Restore" : "Hide"}
