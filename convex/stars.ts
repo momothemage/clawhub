@@ -21,7 +21,7 @@ export const toggle = mutation({
   handler: async (ctx, args) => {
     const { userId } = await requireUser(ctx);
     const skill = await ctx.db.get(args.skillId);
-    if (!skill || skill.softDeletedAt) throw new Error("Skill not found");
+    if (!skill) throw new Error("Skill not found");
 
     const existing = await ctx.db
       .query("stars")
@@ -33,6 +33,8 @@ export const toggle = mutation({
       await insertStatEvent(ctx, { skillId: skill._id, kind: "unstar" });
       return { starred: false };
     }
+
+    if (skill.softDeletedAt) throw new Error("Skill not found");
 
     await ctx.db.insert("stars", {
       skillId: args.skillId,
