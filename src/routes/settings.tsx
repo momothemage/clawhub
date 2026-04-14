@@ -52,11 +52,14 @@ export function Settings() {
           handle: string;
           displayName: string;
           kind: "user" | "org";
+          image?: string | null;
+          bio?: string | null;
         };
         role: "owner" | "admin" | "publisher";
       }>
     | undefined;
   const createOrg = useMutation(api.publishers.createOrg);
+  const updateOrgProfile = useMutation(api.publishers.updateProfile);
   const addOrgMember = useMutation(api.publishers.addMember);
   const removeOrgMember = useMutation(api.publishers.removeMember);
   const [displayName, setDisplayName] = useState("");
@@ -66,6 +69,9 @@ export function Settings() {
   const [orgHandle, setOrgHandle] = useState("");
   const [orgDisplayName, setOrgDisplayName] = useState("");
   const [selectedOrgHandle, setSelectedOrgHandle] = useState("");
+  const [selectedOrgDisplayName, setSelectedOrgDisplayName] = useState("");
+  const [selectedOrgBio, setSelectedOrgBio] = useState("");
+  const [selectedOrgImage, setSelectedOrgImage] = useState("");
   const [memberHandle, setMemberHandle] = useState("");
   const [memberRole, setMemberRole] = useState<"owner" | "admin" | "publisher">("publisher");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -103,6 +109,18 @@ export function Settings() {
       setSelectedOrgHandle(orgs[0].publisher.handle);
     }
   }, [orgs, selectedOrgHandle]);
+
+  useEffect(() => {
+    if (!selectedOrg) {
+      setSelectedOrgDisplayName("");
+      setSelectedOrgBio("");
+      setSelectedOrgImage("");
+      return;
+    }
+    setSelectedOrgDisplayName(selectedOrg.publisher.displayName ?? "");
+    setSelectedOrgBio(selectedOrg.publisher.bio ?? "");
+    setSelectedOrgImage(selectedOrg.publisher.image ?? "");
+  }, [selectedOrg]);
 
   if (!me) {
     return (
@@ -149,6 +167,17 @@ export function Settings() {
       setOrgHandle("");
       setOrgDisplayName("");
     }
+  }
+
+  async function onSaveOrgProfile() {
+    if (!selectedOrg) return;
+    await updateOrgProfile({
+      publisherId: selectedOrg.publisher._id,
+      displayName: selectedOrgDisplayName,
+      bio: selectedOrgBio || undefined,
+      image: selectedOrgImage || undefined,
+    });
+    toast.success("Organization updated");
   }
 
   return (
@@ -250,6 +279,32 @@ export function Settings() {
               <>
                 <Separator className="my-2" />
 
+                {selectedOrg ? (
+                  <div className="rounded-[var(--radius-sm)] border border-[color:var(--line)] bg-[color:var(--surface-muted)] p-4">
+                    <div className="flex items-center gap-4">
+                      <Avatar className="h-16 w-16">
+                        <AvatarImage
+                          src={selectedOrgImage.trim() || undefined}
+                          alt={selectedOrgDisplayName || selectedOrg.publisher.handle}
+                        />
+                        <AvatarFallback className="text-lg">
+                          {(selectedOrgDisplayName || selectedOrg.publisher.handle)
+                            .charAt(0)
+                            .toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="min-w-0">
+                        <div className="text-base font-semibold text-[color:var(--ink)]">
+                          {selectedOrgDisplayName || selectedOrg.publisher.handle}
+                        </div>
+                        <div className="text-sm text-[color:var(--ink-soft)]">
+                          @{selectedOrg.publisher.handle}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
                 <div className="flex flex-col gap-2">
                   <Label htmlFor="settings-manage-org">Manage org</Label>
                   <select
@@ -268,6 +323,39 @@ export function Settings() {
 
                 {selectedOrg && selectedOrg.role !== "publisher" ? (
                   <>
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="settings-selected-org-display-name">Org display name</Label>
+                      <Input
+                        id="settings-selected-org-display-name"
+                        value={selectedOrgDisplayName}
+                        onChange={(event) => setSelectedOrgDisplayName(event.target.value)}
+                        placeholder="OpenClaw"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="settings-selected-org-image">Profile image URL</Label>
+                      <Input
+                        id="settings-selected-org-image"
+                        value={selectedOrgImage}
+                        onChange={(event) => setSelectedOrgImage(event.target.value)}
+                        placeholder="https://example.com/logo.png"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="settings-selected-org-bio">Org bio</Label>
+                      <Textarea
+                        id="settings-selected-org-bio"
+                        rows={4}
+                        value={selectedOrgBio}
+                        onChange={(event) => setSelectedOrgBio(event.target.value)}
+                        placeholder="Tell people what this organization publishes."
+                      />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Button type="button" onClick={() => void onSaveOrgProfile()}>
+                        Save org profile
+                      </Button>
+                    </div>
                     <div className="flex flex-col gap-2">
                       <Label htmlFor="settings-add-member">Add member</Label>
                       <Input

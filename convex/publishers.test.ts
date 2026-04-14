@@ -5,6 +5,7 @@ import {
   listMine,
   migrateLegacyPublisherHandleToOrgInternal,
   removeMember,
+  updateProfile,
 } from "./publishers";
 
 vi.mock("@convex-dev/auth/server", () => ({
@@ -50,6 +51,15 @@ const migrateLegacyPublisherHandleToOrgInternalHandler = (
 
 const listMineHandler = (
   listMine as unknown as WrappedHandler<Record<string, never>, Array<unknown>>
+)._handler;
+
+const updateProfileHandler = (
+  updateProfile as unknown as WrappedHandler<{
+    publisherId: string;
+    displayName: string;
+    bio?: string;
+    image?: string;
+  }>
 )._handler;
 
 describe("publishers membership controls", () => {
@@ -370,6 +380,135 @@ describe("publishers membership controls", () => {
         role: "admin",
       }),
     );
+  });
+
+  it("lets org admins update org profile fields", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
+    const patch = vi.fn(async () => {});
+    const insert = vi.fn(async () => "auditLogs:1");
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "users:admin") return { _id: id };
+          if (id === "publishers:org") {
+            return {
+              _id: id,
+              kind: "org",
+              handle: "shopify",
+              displayName: "Shopify",
+              image: undefined,
+              bio: undefined,
+            };
+          }
+          return null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "publisherMembers") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue({
+                  _id: "publisherMembers:admin",
+                  publisherId: "publishers:org",
+                  userId: "users:admin",
+                  role: "admin",
+                }),
+              })),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        patch,
+        insert,
+        delete: vi.fn(),
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    await expect(
+      updateProfileHandler(
+        ctx as never,
+        {
+          publisherId: "publishers:org",
+          displayName: "Shopify",
+          bio: "Commerce platform",
+          image: "https://cdn.example.com/shopify.png",
+        } as never,
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      publisher: expect.objectContaining({
+        _id: "publishers:org",
+        displayName: "Shopify",
+      }),
+    });
+
+    expect(patch).toHaveBeenCalledWith(
+      "publishers:org",
+      expect.objectContaining({
+        displayName: "Shopify",
+        bio: "Commerce platform",
+        image: "https://cdn.example.com/shopify.png",
+      }),
+    );
+    expect(insert).toHaveBeenCalledWith(
+      "auditLogs",
+      expect.objectContaining({
+        action: "publisher.profile.update",
+        targetId: "publishers:org",
+      }),
+    );
+  });
+
+  it("rejects invalid org profile image URLs", async () => {
+    vi.mocked(getAuthUserId).mockResolvedValue("users:admin" as never);
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === "users:admin") return { _id: id };
+          if (id === "publishers:org") {
+            return {
+              _id: id,
+              kind: "org",
+              handle: "shopify",
+              displayName: "Shopify",
+            };
+          }
+          return null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "publisherMembers") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue({
+                  _id: "publisherMembers:admin",
+                  publisherId: "publishers:org",
+                  userId: "users:admin",
+                  role: "admin",
+                }),
+              })),
+            };
+          }
+          throw new Error(`unexpected table ${table}`);
+        }),
+        patch: vi.fn(),
+        insert: vi.fn(),
+        delete: vi.fn(),
+        replace: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    await expect(
+      updateProfileHandler(
+        ctx as never,
+        {
+          publisherId: "publishers:org",
+          displayName: "Shopify",
+          image: "not-a-url",
+        } as never,
+      ),
+    ).rejects.toThrow("Image must be a valid URL");
   });
 });
 

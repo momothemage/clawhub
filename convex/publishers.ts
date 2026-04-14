@@ -539,6 +539,70 @@ export const createOrg = mutation({
   },
 });
 
+export const updateProfile = mutation({
+  args: {
+    publisherId: v.id("publishers"),
+    displayName: v.string(),
+    bio: v.optional(v.string()),
+    image: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const { userId } = await requireUser(ctx);
+    const publisher = await ctx.db.get(args.publisherId);
+    if (!publisher || publisher.deletedAt || publisher.deactivatedAt) {
+      throw new ConvexError("Publisher not found");
+    }
+    if (publisher.kind !== "org") {
+      throw new ConvexError("Only org publishers can be updated here");
+    }
+
+    const membership = await getPublisherMembership(ctx, publisher._id, userId);
+    if (!membership || !isPublisherRoleAllowed(membership.role, ["admin"])) {
+      throw new ConvexError("Forbidden");
+    }
+
+    const displayName = args.displayName.trim() || publisher.handle;
+    const bio = args.bio?.trim() || undefined;
+    const image = args.image?.trim() || undefined;
+    if (image) {
+      let parsed: URL;
+      try {
+        parsed = new URL(image);
+      } catch {
+        throw new ConvexError("Image must be a valid URL");
+      }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new ConvexError("Image must use http or https");
+      }
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(publisher._id, {
+      displayName,
+      bio,
+      image,
+      updatedAt: now,
+    });
+    await ctx.db.insert("auditLogs", {
+      actorUserId: userId,
+      action: "publisher.profile.update",
+      targetType: "publisher",
+      targetId: publisher._id,
+      metadata: {
+        displayName,
+        bio,
+        image,
+      },
+      createdAt: now,
+    });
+
+    return {
+      ok: true as const,
+      publisher: toPublicPublisher(await ctx.db.get(publisher._id)),
+    };
+  },
+});
+
 export const migrateLegacyPublisherHandleToOrg = mutation({
   args: {
     handle: v.string(),
