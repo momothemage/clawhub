@@ -6,6 +6,10 @@
 
 - Search: add CJK tokenization support (Chinese/Japanese/Korean) with Intl.Segmenter plus fallback behavior to improve skill query matching (#1596) (thanks @pq-dong).
 
+### Fixes
+
+- Stats maintenance: keep skill stat migration fields synchronized by treating top-level stat fields as canonical during backfill/reconcile fallback reads (#1704) (thanks @momothemage).
+
 ## 0.10.0 - 2026-04-05
 
 ### Added
