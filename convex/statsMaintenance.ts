@@ -183,25 +183,53 @@ export const runSkillStatBackfillInternal: ReturnType<typeof internalAction> = i
 
 function buildSkillStatPatch(skill: Doc<"skills">) {
   const stats = skill.stats;
-  const nextDownloads = stats.downloads;
-  const nextStars = stats.stars;
-  const nextInstallsCurrent = stats.installsCurrent ?? 0;
-  const nextInstallsAllTime = stats.installsAllTime ?? 0;
 
-  if (
+  // Prefer the top-level stat fields when they exist (they are kept up-to-date
+  // by applySkillStatDeltas on every event flush).  Fall back to the legacy
+  // nested `stats` object only for documents that pre-date the migration.
+  const nextDownloads =
+    typeof skill.statsDownloads === "number" ? skill.statsDownloads : stats.downloads;
+  const nextStars =
+    typeof skill.statsStars === "number" ? skill.statsStars : stats.stars;
+  const nextInstallsCurrent =
+    typeof skill.statsInstallsCurrent === "number"
+      ? skill.statsInstallsCurrent
+      : (stats.installsCurrent ?? 0);
+  const nextInstallsAllTime =
+    typeof skill.statsInstallsAllTime === "number"
+      ? skill.statsInstallsAllTime
+      : (stats.installsAllTime ?? 0);
+
+  // Check whether both sets of fields are already in sync.
+  const topLevelInSync =
     skill.statsDownloads === nextDownloads &&
     skill.statsStars === nextStars &&
     skill.statsInstallsCurrent === nextInstallsCurrent &&
-    skill.statsInstallsAllTime === nextInstallsAllTime
-  ) {
+    skill.statsInstallsAllTime === nextInstallsAllTime;
+
+  const nestedInSync =
+    stats.downloads === nextDownloads &&
+    stats.stars === nextStars &&
+    (stats.installsCurrent ?? 0) === nextInstallsCurrent &&
+    (stats.installsAllTime ?? 0) === nextInstallsAllTime;
+
+  if (topLevelInSync && nestedInSync) {
     return null;
   }
 
+  // Write both sets of fields so they stay in sync.
   return {
     statsDownloads: nextDownloads,
     statsStars: nextStars,
     statsInstallsCurrent: nextInstallsCurrent,
     statsInstallsAllTime: nextInstallsAllTime,
+    stats: {
+      ...stats,
+      downloads: nextDownloads,
+      stars: nextStars,
+      installsCurrent: nextInstallsCurrent,
+      installsAllTime: nextInstallsAllTime,
+    },
   };
 }
 
@@ -249,13 +277,18 @@ export const reconcileSkillStarCounts = internalMutation({
         .collect();
       const actualComments = commentRecords.filter((c) => !c.softDeletedAt).length;
 
-      // Check if stats are out of sync
-      if (skill.stats.stars !== actualStars || skill.stats.comments !== actualComments) {
+      // Check if stats are out of sync (compare against the canonical value
+      // used by toPublicSkill: prefer top-level field, fall back to nested).
+      const currentStars =
+        typeof skill.statsStars === "number" ? skill.statsStars : skill.stats.stars;
+
+      if (currentStars !== actualStars || skill.stats.comments !== actualComments) {
         const updatedStats = {
           ...skill.stats,
           stars: actualStars,
           comments: actualComments,
         };
+        // Keep both the top-level index field and the legacy nested field in sync.
         await ctx.db.patch(skill._id, {
           statsStars: actualStars,
           stats: updatedStats,
