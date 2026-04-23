@@ -7,6 +7,9 @@ import remarkGfm from "remark-gfm";
 import type { HighlighterGeneric } from "shiki";
 import type { PluggableList } from "unified";
 import { cn } from "../lib/utils";
+import { ProxiedImg } from "./ProxiedImg";
+
+const MARKDOWN_COMPONENTS = { img: ProxiedImg };
 
 interface MarkdownPreviewProps {
   children: string;
@@ -102,7 +105,11 @@ export function MarkdownPreview({ children, className, highlight = true }: Markd
 
   return (
     <div className={cn("markdown", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={rehypePlugins}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={rehypePlugins}
+        components={MARKDOWN_COMPONENTS}
+      >
         {children}
       </ReactMarkdown>
     </div>

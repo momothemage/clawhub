@@ -2,7 +2,10 @@ import { lazy, Suspense } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Doc, Id } from "../../convex/_generated/dataModel";
+import { ProxiedImg } from "./ProxiedImg";
 import { SkillVersionsPanel } from "./SkillVersionsPanel";
+
+const MARKDOWN_COMPONENTS = { img: ProxiedImg };
 
 const SkillDiffCard = lazy(() =>
   import("./SkillDiffCard").then((module) => ({ default: module.SkillDiffCard })),
@@ -96,7 +99,9 @@ export function SkillDetailTabs({
         <div className="tab-body">
           {readmeContent ? (
             <div className="markdown">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{readmeContent}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+                {readmeContent}
+              </ReactMarkdown>
             </div>
           ) : readmeError ? (
             <div className="empty-state px-[var(--space-4)] py-[var(--space-6)]">
