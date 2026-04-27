@@ -212,6 +212,36 @@ Stores your API token + cached registry URL.
 - `--fuzzy` resolves the handle via fuzzy user search (admin only).
 - `--yes` skips confirmation.
 
+### `package explore [query...]`
+
+- Browses or searches the unified package catalog via `GET /api/v1/packages` and `GET /api/v1/packages/search`.
+- Use this for plugins and other package-family entries; top-level `search` remains the skill search surface.
+- Flags:
+  - `--family skill|code-plugin|bundle-plugin`
+  - `--official`
+  - `--executes-code`
+  - `--limit <n>` (1-100, default: 25)
+  - `--json`
+
+Examples:
+
+```bash
+clawhub package explore --family code-plugin
+clawhub package explore episodic-claw --family code-plugin
+```
+
+### `package inspect <name>`
+
+- Fetches package metadata without installing.
+- Use this for plugin metadata, compatibility, verification, source, and version/file inspection.
+- `--version <version>`: inspect a specific version (default: latest).
+- `--tag <tag>`: inspect a tagged version (e.g. `latest`).
+- `--versions`: list version history (first page).
+- `--limit <n>`: max versions to list (1-100).
+- `--files`: list files for the selected version.
+- `--file <path>`: fetch raw file content (text files only; 200KB limit).
+- `--json`: machine-readable output.
+
 ### `package publish <source>`
 
 - Publishes a code plugin or bundle plugin via `POST /api/v1/packages`.

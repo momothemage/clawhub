@@ -1270,6 +1270,60 @@ describe("packages public queries", () => {
     expect(ctx.db.query).toHaveBeenCalledWith("packageSearchDigest");
   });
 
+  it("keeps direct package-name matches scoped to the requested family", async () => {
+    const exactPkg = makePackageDoc({
+      _id: "packages:code",
+      name: "demo-plugin",
+      normalizedName: "demo-plugin",
+      family: "code-plugin",
+    });
+    const exactDigest = makeDigest("demo-plugin", {
+      packageId: "packages:code",
+      family: "code-plugin",
+    });
+    const { ctx } = makeDigestCtx({
+      pages: [],
+      exactPackages: [exactPkg],
+      exactDigests: [exactDigest],
+    });
+
+    const result = await searchPublicHandler(ctx, {
+      query: "demo-plugin",
+      family: "bundle-plugin",
+      limit: 1,
+    });
+
+    expect(result).toEqual([]);
+  });
+
+  it("stops fallback scanning after enough package search matches", async () => {
+    const { ctx, paginate } = makeDigestCtx({
+      pages: [
+        {
+          page: [
+            makeDigest("demo-alpha", { updatedAt: 20 }),
+            makeDigest("demo-beta", { updatedAt: 10 }),
+          ],
+          isDone: false,
+          continueCursor: "cursor:1",
+        },
+        {
+          page: [makeDigest("demo-gamma")],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await searchPublicHandler(ctx, {
+      query: "demo",
+      limit: 2,
+    });
+
+    expect(result.map((entry) => entry.package.name)).toEqual(["demo-alpha", "demo-beta"]);
+    expect(paginate).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps spaced queries on the scan path without throwing", async () => {
     const { ctx } = makeDigestCtx({
       pages: [
@@ -1355,7 +1409,7 @@ describe("packages public queries", () => {
     });
 
     expect(result).toEqual([]);
-    expect(paginate).toHaveBeenCalledTimes(150);
+    expect(paginate).toHaveBeenCalledTimes(5);
   });
 
   it("uses the official index for no-family official search filters", async () => {

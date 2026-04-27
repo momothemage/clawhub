@@ -47,7 +47,8 @@ import { runStaticPublishScan } from "./lib/staticPublishScan";
 const MAX_PACKAGE_SCAN_DOCUMENTS = 30_000;
 const MAX_PUBLIC_LIST_SCAN_PAGES = 200;
 const MAX_SEARCH_PAGE_SIZE = 200;
-const MAX_SEARCH_SCAN_PAGES = 200;
+const MAX_SEARCH_SCAN_DOCUMENTS = 1_000;
+const MAX_SEARCH_SCAN_PAGES = 20;
 const MAX_DIRECT_PACKAGE_SEARCH_CANDIDATES = 20;
 const INITIAL_PACKAGE_VT_SCAN_DELAY_MS = 30_000;
 const internalRefs = internal as unknown as {
@@ -351,6 +352,24 @@ function digestMatchesFilters(
     return (digest.capabilityTags ?? []).includes(args.capabilityTag);
   }
   return true;
+}
+
+function digestMatchesSearchFilters(
+  digest: PackageDigestLike,
+  args: {
+    family?: PackageFamily;
+    channel?: PackageChannel;
+    isOfficial?: boolean;
+    executesCode?: boolean;
+    capabilityTag?: string;
+  },
+) {
+  if (args.family && digest.family !== args.family) return false;
+  if (args.channel && digest.channel !== args.channel) return false;
+  if (typeof args.isOfficial === "boolean" && digest.isOfficial !== args.isOfficial) {
+    return false;
+  }
+  return digestMatchesFilters(digest, args);
 }
 
 function toPublicPackageListItem(digest: PackageDigestLike): PublicPackageListItem {
@@ -1313,11 +1332,7 @@ async function searchPackagesImpl(
     : await resolveDirectPackageSearchDigests(ctx, queryText);
   for (const digest of directDigests) {
     if (!(await canViewPackage(digest))) continue;
-    if (args.channel && digest.channel !== args.channel) continue;
-    if (typeof args.isOfficial === "boolean" && digest.isOfficial !== args.isOfficial) {
-      continue;
-    }
-    if (!digestMatchesFilters(digest, args)) continue;
+    if (!digestMatchesSearchFilters(digest, args)) continue;
     const score = packageSearchScore(digest, queryText);
     if (score <= 0 || seen.has(digest.packageId)) continue;
     seen.add(digest.packageId);
@@ -1332,9 +1347,14 @@ async function searchPackagesImpl(
     let cursor: string | null = null;
     let done = false;
     let loops = 0;
-    let remainingScanBudget = MAX_PACKAGE_SCAN_DOCUMENTS;
+    let remainingScanBudget = MAX_SEARCH_SCAN_DOCUMENTS;
 
-    while (!done && loops < MAX_SEARCH_SCAN_PAGES && remainingScanBudget > 0) {
+    while (
+      matches.length < targetCount &&
+      !done &&
+      loops < MAX_SEARCH_SCAN_PAGES &&
+      remainingScanBudget > 0
+    ) {
       loops += 1;
       const effectivePageSize = Math.min(pageSize, remainingScanBudget);
       if (effectivePageSize <= 0) break;
@@ -1346,11 +1366,7 @@ async function searchPackagesImpl(
       } = await builder.order("desc").paginate({ cursor, numItems: effectivePageSize });
       for (const digest of page.page) {
         if (!(await canViewPackage(digest))) continue;
-        if (args.channel && digest.channel !== args.channel) continue;
-        if (typeof args.isOfficial === "boolean" && digest.isOfficial !== args.isOfficial) {
-          continue;
-        }
-        if (!digestMatchesFilters(digest, args)) continue;
+        if (!digestMatchesSearchFilters(digest, args)) continue;
         const score = packageSearchScore(digest, queryText);
         if (score <= 0 || seen.has(digest.packageId)) continue;
         seen.add(digest.packageId);
@@ -1358,6 +1374,7 @@ async function searchPackagesImpl(
           score,
           package: toPublicPackageListItem(digest),
         });
+        if (matches.length >= targetCount) break;
       }
       done = page.isDone;
       cursor = page.continueCursor;
