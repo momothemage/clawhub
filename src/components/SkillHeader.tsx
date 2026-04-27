@@ -125,6 +125,10 @@ export function SkillHeader({
     ? "Security findings were reviewed by staff and cleared for public use."
     : null;
   const installOwnerId = owner?._id ?? skill.ownerPublisherId ?? skill.ownerUserId ?? null;
+  const ownerSegment = ownerHandle?.trim() || (installOwnerId ? String(installOwnerId) : null);
+  const scannerBasePath = ownerSegment
+    ? `/${encodeURIComponent(ownerSegment)}/${encodeURIComponent(skill.slug)}/security`
+    : null;
 
   return (
     <>
@@ -321,6 +325,7 @@ export function SkillHeader({
                 llmAnalysis={latestVersion?.llmAnalysis as LlmAnalysis | undefined}
                 staticFindings={latestVersion?.staticScan?.findings}
                 capabilityTags={latestVersion?.capabilityTags}
+                scannerBasePath={scannerBasePath}
               />
               <p className="scan-disclaimer">
                 Like a lobster shell, security has layers — review code before you run it.

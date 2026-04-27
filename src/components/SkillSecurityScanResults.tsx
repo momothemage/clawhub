@@ -53,10 +53,11 @@ type SecurityScanResultsProps = {
   llmAnalysis?: LlmAnalysis | null;
   staticFindings?: StaticFinding[];
   capabilityTags?: string[] | null;
+  scannerBasePath?: string | null;
   variant?: "panel" | "badge";
 };
 
-function VirusTotalIcon({ className }: { className?: string }) {
+export function VirusTotalIcon({ className }: { className?: string }) {
   return (
     <svg
       className={className}
@@ -76,7 +77,7 @@ function VirusTotalIcon({ className }: { className?: string }) {
   );
 }
 
-function OpenClawIcon({ className }: { className?: string }) {
+export function OpenClawIcon({ className }: { className?: string }) {
   return (
     <svg
       className={className}
@@ -105,7 +106,7 @@ function OpenClawIcon({ className }: { className?: string }) {
   );
 }
 
-function getScanStatusInfo(status: string) {
+export function getScanStatusInfo(status: string) {
   switch (status.toLowerCase()) {
     case "benign":
     case "clean":
@@ -334,6 +335,7 @@ export function SecurityScanResults({
   llmAnalysis,
   staticFindings,
   capabilityTags,
+  scannerBasePath,
   variant = "panel",
 }: SecurityScanResultsProps) {
   const visibleCapabilityTags = (capabilityTags ?? []).filter(Boolean);
@@ -369,12 +371,30 @@ export function SecurityScanResults({
                 ↗
               </a>
             ) : null}
+            {scannerBasePath ? (
+              <a
+                href={`${scannerBasePath}/virustotal`}
+                className="version-scan-link"
+                onClick={(event) => event.stopPropagation()}
+              >
+                Details
+              </a>
+            ) : null}
           </div>
         ) : null}
         {llmStatusInfo ? (
           <div className="version-scan-badge">
             <OpenClawIcon className="version-scan-icon version-scan-icon-oc" />
             <span className={llmStatusInfo.className}>{llmStatusInfo.label}</span>
+            {scannerBasePath ? (
+              <a
+                href={`${scannerBasePath}/openclaw`}
+                className="version-scan-link"
+                onClick={(event) => event.stopPropagation()}
+              >
+                Details
+              </a>
+            ) : null}
           </div>
         ) : null}
       </>
@@ -420,6 +440,11 @@ export function SecurityScanResults({
                 View report →
               </a>
             ) : null}
+            {scannerBasePath ? (
+              <a href={`${scannerBasePath}/virustotal`} className="scan-result-link">
+                Details →
+              </a>
+            ) : null}
           </div>
         ) : null}
         {isCodeInsight && aiAnalysis && (vtStatus === "malicious" || vtStatus === "suspicious") ? (
@@ -440,6 +465,11 @@ export function SecurityScanResults({
             {llmAnalysis.confidence ? (
               <span className="scan-result-confidence">{llmAnalysis.confidence} confidence</span>
             ) : null}
+            {scannerBasePath ? (
+              <a href={`${scannerBasePath}/openclaw`} className="scan-result-link">
+                Details →
+              </a>
+            ) : null}
           </div>
         ) : null}
         {llmAnalysis &&
@@ -449,11 +479,26 @@ export function SecurityScanResults({
           <LlmAnalysisDetail analysis={llmAnalysis} />
         ) : null}
         {staticFindings && staticFindings.length > 0 ? (
-          <StaticAnalysisDetail
-            findings={staticFindings}
-            vtStatus={vtStatus}
-            llmStatus={llmVerdict}
-          />
+          <>
+            {scannerBasePath ? (
+              <div className="scan-result-row">
+                <div className="scan-result-scanner">
+                  <span className="scan-result-scanner-name">Static analysis</span>
+                </div>
+                <div className="scan-result-status scan-status-suspicious">
+                  {staticFindings.length} finding{staticFindings.length === 1 ? "" : "s"}
+                </div>
+                <a href={`${scannerBasePath}/static-analysis`} className="scan-result-link">
+                  Details →
+                </a>
+              </div>
+            ) : null}
+            <StaticAnalysisDetail
+              findings={staticFindings}
+              vtStatus={vtStatus}
+              llmStatus={llmVerdict}
+            />
+          </>
         ) : null}
       </div>
     </div>

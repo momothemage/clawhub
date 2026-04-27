@@ -456,6 +456,7 @@ function PluginDetailRoute() {
                   vtAnalysis={latestRelease.vtAnalysis ?? undefined}
                   llmAnalysis={latestRelease.llmAnalysis ?? undefined}
                   staticFindings={latestRelease.staticScan?.findings ?? []}
+                  scannerBasePath={`/plugins/${encodeURIComponent(name)}/security`}
                 />
               </CardContent>
             </Card>
