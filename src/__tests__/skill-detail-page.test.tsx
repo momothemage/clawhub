@@ -8,7 +8,6 @@ const useAuthStatusMock = vi.fn();
 
 process.env.VITE_CONVEX_URL = process.env.VITE_CONVEX_URL ?? "https://example.convex.cloud";
 
-
 vi.mock("../components/UserBadge", () => ({
   UserBadge: () => null,
 }));
@@ -229,10 +228,12 @@ describe("SkillDetailPage", () => {
     );
 
     expect(screen.getByRole("heading", { name: "CLI Commands" })).toBeTruthy();
-    expect(screen.getByText("openclaw skills install steipete/weather")).toBeTruthy();
+    expect(screen.getByText("openclaw skills install weather")).toBeTruthy();
     expect(screen.getByText("npx clawhub@latest install weather")).toBeTruthy();
     expect(screen.getByText(/After install, inspect the skill metadata/i)).toBeTruthy();
-    expect(installHeading.compareDocumentPosition(scanDisclaimer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(
+      installHeading.compareDocumentPosition(scanDisclaimer) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("does not refetch readme when SSR data already matches the latest version", async () => {
@@ -324,17 +325,17 @@ describe("SkillDetailPage", () => {
     useQueryMock.mockImplementation((_fn: unknown, args: unknown) => {
       if (args === "skip") return undefined;
       if (args && typeof args === "object" && "skillId" in args) return [];
-        return {
-          skill: {
-            _id: "skills:1",
-            slug: "weather",
-            displayName: "Weather",
-            summary: "Get current weather.",
-            ownerUserId: "users:1",
-            ownerPublisherId: "publishers:steipete",
-            tags: {},
-            stats: { stars: 0, downloads: 0 },
-          },
+      return {
+        skill: {
+          _id: "skills:1",
+          slug: "weather",
+          displayName: "Weather",
+          summary: "Get current weather.",
+          ownerUserId: "users:1",
+          ownerPublisherId: "publishers:steipete",
+          tags: {},
+          stats: { stars: 0, downloads: 0 },
+        },
         owner: {
           _id: "publishers:steipete",
           _creationTime: 0,

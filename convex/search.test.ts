@@ -17,14 +17,16 @@ vi.mock("./lib/badges", () => ({
     Boolean(skill.badges?.highlighted),
 }));
 
-type WrappedHandler = {
-  _handler: (
-    ctx: unknown,
-    args: unknown,
-  ) => Promise<Array<{ skill: { slug: string; _id: string } }>>;
+type WrappedHandler<Result = { skill: { slug: string; _id: string } }> = {
+  _handler: (ctx: unknown, args: unknown) => Promise<Array<Result>>;
 };
 
-const searchSkillsHandler = (searchSkills as unknown as WrappedHandler)._handler;
+const searchSkillsHandler = (
+  searchSkills as unknown as WrappedHandler<{
+    skill: { slug: string; _id: string };
+    score: number;
+  }>
+)._handler;
 const lexicalFallbackSkillsHandler = (lexicalFallbackSkills as unknown as WrappedHandler)._handler;
 const hydrateResultsHandler = (
   hydrateResults as unknown as {
