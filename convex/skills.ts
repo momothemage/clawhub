@@ -76,7 +76,6 @@ import {
   publishVersionForUser,
   queueHighlightedWebhook,
 } from "./lib/skillPublish";
-import { runStaticPublishScan } from "./lib/staticPublishScan";
 import { getFrontmatterValue, hashSkillFiles } from "./lib/skills";
 import { computeIsSuspicious, isSkillSuspicious } from "./lib/skillSafety";
 import {
@@ -85,6 +84,8 @@ import {
   extractDigestFields,
   upsertSkillSearchDigest,
 } from "./lib/skillSearchDigest";
+import { readCanonicalStat } from "./lib/skillStats";
+import { runStaticPublishScan } from "./lib/staticPublishScan";
 import { adjustUserSkillStatsForSkillChange } from "./lib/userSkillStats";
 import { getLatestSkillRescanTarget, insertSkillRescanRequest } from "./model/skills/rescans";
 import {
@@ -469,20 +470,14 @@ async function syncSkillModerationFromLatestVersion(
   await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
 }
 
-function buildConflictingSkillUrl(
-  skill: Doc<"skills">,
-  owner: SkillOwnerRef,
-) {
+function buildConflictingSkillUrl(skill: Doc<"skills">, owner: SkillOwnerRef) {
   if (!owner || owner.deletedAt || owner.deactivatedAt || !isPublicSkillDoc(skill)) return null;
   const ownerParam = owner.handle?.trim() || String(owner._id);
   if (!ownerParam) return null;
   return `/${encodeURIComponent(ownerParam)}/${encodeURIComponent(skill.slug)}`;
 }
 
-function buildSlugTakenErrorMessage(
-  skill: Doc<"skills">,
-  owner: SkillOwnerRef,
-) {
+function buildSlugTakenErrorMessage(skill: Doc<"skills">, owner: SkillOwnerRef) {
   if (!owner || owner.deletedAt || owner.deactivatedAt) {
     return (
       "This slug is locked to a deleted or banned account. " +
@@ -495,10 +490,7 @@ function buildSlugTakenErrorMessage(
   return `${base} Existing skill: ${url}`;
 }
 
-function buildAliasTakenErrorMessage(
-  skill: Doc<"skills">,
-  owner: SkillOwnerRef,
-) {
+function buildAliasTakenErrorMessage(skill: Doc<"skills">, owner: SkillOwnerRef) {
   const base = "Slug redirects to an existing skill. Choose a different slug.";
   const url = buildConflictingSkillUrl(skill, owner);
   if (!url) return base;
@@ -1100,6 +1092,39 @@ type ManagementSkillEntry = {
   owner: Doc<"users"> | null;
 };
 
+type DashboardSkillListItem = {
+  _id: Id<"skills">;
+  _creationTime: number;
+  slug: string;
+  displayName: string;
+  summary?: string;
+  ownerUserId: Id<"users">;
+  ownerPublisherId?: Id<"publishers">;
+  canonicalSkillId?: Id<"skills">;
+  forkOf?: Doc<"skills">["forkOf"];
+  latestVersionId?: Id<"skillVersions">;
+  tags: Doc<"skills">["tags"];
+  capabilityTags?: string[];
+  badges: Doc<"skills">["badges"];
+  stats: Doc<"skills">["stats"];
+  moderationStatus?: Doc<"skills">["moderationStatus"];
+  moderationReason?: string;
+  moderationVerdict?: Doc<"skills">["moderationVerdict"];
+  moderationFlags?: string[];
+  isSuspicious?: boolean;
+  pendingReview?: true;
+  qualityDecision?: NonNullable<Doc<"skills">["quality"]>["decision"];
+  latestVersion: {
+    version: string;
+    createdAt: number;
+    vtStatus: string | null;
+    llmStatus: string | null;
+    staticScanStatus: "clean" | "suspicious" | "malicious" | null;
+  } | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
 type BadgeKind = Doc<"skillBadges">["kind"];
 
 async function buildPublicSkillEntries(
@@ -1328,6 +1353,59 @@ async function attachBadgesToSkills(ctx: QueryCtx, skills: Doc<"skills">[]) {
     ...skill,
     badges: badgeMapBySkillId.get(skill._id) ?? {},
   }));
+}
+
+async function toDashboardSkillListItem(
+  ctx: QueryCtx,
+  skill: Doc<"skills"> & { badges?: Doc<"skills">["badges"] },
+): Promise<DashboardSkillListItem> {
+  const latestVersion = skill.latestVersionId ? await ctx.db.get(skill.latestVersionId) : null;
+  const stats = {
+    ...skill.stats,
+    downloads: readCanonicalStat(skill, "downloads"),
+    stars: readCanonicalStat(skill, "stars"),
+    installsCurrent: readCanonicalStat(skill, "installsCurrent"),
+    installsAllTime: readCanonicalStat(skill, "installsAllTime"),
+  };
+
+  return {
+    _id: skill._id,
+    _creationTime: skill._creationTime,
+    slug: skill.slug,
+    displayName: skill.displayName,
+    summary: skill.summary,
+    ownerUserId: skill.ownerUserId,
+    ownerPublisherId: skill.ownerPublisherId,
+    canonicalSkillId: skill.canonicalSkillId,
+    forkOf: skill.forkOf,
+    latestVersionId: skill.latestVersionId,
+    tags: skill.tags,
+    capabilityTags: skill.capabilityTags,
+    badges: skill.badges,
+    stats,
+    moderationStatus: skill.moderationStatus,
+    moderationReason: skill.moderationReason,
+    moderationVerdict: skill.moderationVerdict,
+    moderationFlags: skill.moderationFlags,
+    isSuspicious: skill.isSuspicious,
+    pendingReview:
+      skill.moderationReason === "pending.scan" || skill.moderationReason === "pending.scan.stale"
+        ? true
+        : undefined,
+    qualityDecision: skill.quality?.decision,
+    latestVersion:
+      latestVersion && !latestVersion.softDeletedAt
+        ? {
+            version: latestVersion.version,
+            createdAt: latestVersion.createdAt,
+            vtStatus: latestVersion.vtAnalysis?.status ?? null,
+            llmStatus: latestVersion.llmAnalysis?.status ?? null,
+            staticScanStatus: latestVersion.staticScan?.status ?? null,
+          }
+        : null,
+    createdAt: skill.createdAt,
+    updatedAt: skill.updatedAt,
+  };
 }
 
 async function loadHighlightedSkills(ctx: QueryCtx, limit: number) {
@@ -2129,36 +2207,9 @@ export const list = query({
       const withBadges = await attachBadgesToSkills(ctx, filtered);
 
       if (isOwnDashboard) {
-        return withBadges
-          .map((skill) => {
-            const publicSkill = toPublicSkill(skill);
-            if (publicSkill) return publicSkill;
-            const isPending =
-              skill.moderationStatus === "hidden" && skill.moderationReason === "pending.scan";
-            if (isPending) {
-              const { badges } = skill;
-              return {
-                _id: skill._id,
-                _creationTime: skill._creationTime,
-                slug: skill.slug,
-                displayName: skill.displayName,
-                summary: skill.summary,
-                ownerUserId: skill.ownerUserId,
-                ownerPublisherId: skill.ownerPublisherId,
-                canonicalSkillId: skill.canonicalSkillId,
-                forkOf: skill.forkOf,
-                latestVersionId: skill.latestVersionId,
-                tags: skill.tags,
-                badges,
-                stats: skill.stats,
-                createdAt: skill.createdAt,
-                updatedAt: skill.updatedAt,
-                pendingReview: true as const,
-              };
-            }
-            return null;
-          })
-          .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill));
+        return await Promise.all(
+          withBadges.map(async (skill) => await toDashboardSkillListItem(ctx, skill)),
+        );
       }
 
       const visibleSkills = await filterSkillsByActiveOwner(ctx, withBadges);
@@ -2179,38 +2230,9 @@ export const list = query({
       const withBadges = await attachBadgesToSkills(ctx, filtered);
 
       if (isOwnDashboard) {
-        // For owner's own dashboard, include pending skills
-        return withBadges
-          .map((skill) => {
-            const publicSkill = toPublicSkill(skill);
-            if (publicSkill) return publicSkill;
-            // Include pending skills for owner
-            const isPending =
-              skill.moderationStatus === "hidden" && skill.moderationReason === "pending.scan";
-            if (isPending) {
-              // Use computed badges from attachBadgesToSkills, not stored skill.badges
-              const { badges } = skill;
-              return {
-                _id: skill._id,
-                _creationTime: skill._creationTime,
-                slug: skill.slug,
-                displayName: skill.displayName,
-                summary: skill.summary,
-                ownerUserId: skill.ownerUserId,
-                canonicalSkillId: skill.canonicalSkillId,
-                forkOf: skill.forkOf,
-                latestVersionId: skill.latestVersionId,
-                tags: skill.tags,
-                badges,
-                stats: skill.stats,
-                createdAt: skill.createdAt,
-                updatedAt: skill.updatedAt,
-                pendingReview: true as const,
-              };
-            }
-            return null;
-          })
-          .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill));
+        return await Promise.all(
+          withBadges.map(async (skill) => await toDashboardSkillListItem(ctx, skill)),
+        );
       }
 
       const visibleSkills = await filterSkillsByActiveOwner(ctx, withBadges);
@@ -2784,7 +2806,10 @@ export const listPublicPageV4 = query({
     let scanInclusive = isFirstPage;
     let hasMore = false;
     let nextCursor: string | null = null;
-    let remainingRows = Math.max(numItems, Math.min(MAX_FILTERED_PUBLIC_LIST_SCAN_ROWS, numItems * 12));
+    let remainingRows = Math.max(
+      numItems,
+      Math.min(MAX_FILTERED_PUBLIC_LIST_SCAN_ROWS, numItems * 12),
+    );
 
     for (let pageCount = 0; pageCount < MAX_FILTERED_PUBLIC_LIST_SCAN_PAGES; pageCount += 1) {
       if (remainingRows <= 0) break;
@@ -3879,7 +3904,8 @@ export const updateSkillVersionStaticScanInternal = internalMutation({
   },
   handler: async (ctx, args) => {
     const version = await ctx.db.get(args.versionId);
-    if (!version || version.skillId !== args.skillId) return { ok: true as const, skipped: "missing" as const };
+    if (!version || version.skillId !== args.skillId)
+      return { ok: true as const, skipped: "missing" as const };
 
     await ctx.db.patch(version._id, {
       staticScan: args.staticScan,
@@ -3930,37 +3956,39 @@ export const updateSkillVersionStaticScanInternal = internalMutation({
   },
 });
 
-export const scanSkillVersionStaticallyInternal: ReturnType<typeof internalAction> = internalAction({
-  args: {
-    skillId: v.id("skills"),
-    versionId: v.id("skillVersions"),
+export const scanSkillVersionStaticallyInternal: ReturnType<typeof internalAction> = internalAction(
+  {
+    args: {
+      skillId: v.id("skills"),
+      versionId: v.id("skillVersions"),
+    },
+    handler: async (ctx, args) => {
+      const [skill, version] = await Promise.all([
+        ctx.runQuery(internal.skills.getSkillByIdInternal, { skillId: args.skillId }),
+        ctx.runQuery(internal.skills.getVersionByIdInternal, { versionId: args.versionId }),
+      ]);
+
+      if (!skill || !version) {
+        return { ok: true as const, skipped: "missing" as const };
+      }
+
+      const staticScan = await runStaticPublishScan(ctx, {
+        slug: skill.slug,
+        displayName: skill.displayName,
+        summary: skill.summary ?? undefined,
+        frontmatter: version.parsed?.frontmatter ?? {},
+        metadata: version.parsed?.metadata,
+        files: version.files,
+      });
+
+      return await ctx.runMutation(internal.skills.updateSkillVersionStaticScanInternal, {
+        skillId: skill._id,
+        versionId: version._id,
+        staticScan,
+      });
+    },
   },
-  handler: async (ctx, args) => {
-    const [skill, version] = await Promise.all([
-      ctx.runQuery(internal.skills.getSkillByIdInternal, { skillId: args.skillId }),
-      ctx.runQuery(internal.skills.getVersionByIdInternal, { versionId: args.versionId }),
-    ]);
-
-    if (!skill || !version) {
-      return { ok: true as const, skipped: "missing" as const };
-    }
-
-    const staticScan = await runStaticPublishScan(ctx, {
-      slug: skill.slug,
-      displayName: skill.displayName,
-      summary: skill.summary ?? undefined,
-      frontmatter: version.parsed?.frontmatter ?? {},
-      metadata: version.parsed?.metadata,
-      files: version.files,
-    });
-
-    return await ctx.runMutation(internal.skills.updateSkillVersionStaticScanInternal, {
-      skillId: skill._id,
-      versionId: version._id,
-      staticScan,
-    });
-  },
-});
+);
 
 export const backfillSkillStaticScansInternal: ReturnType<typeof internalAction> = internalAction({
   args: {
@@ -3970,10 +3998,13 @@ export const backfillSkillStaticScansInternal: ReturnType<typeof internalAction>
   },
   handler: async (ctx, args) => {
     const batchSize = Math.max(1, Math.min(args.batchSize ?? 25, 100));
-    const batch = await ctx.runQuery(internal.skills.getActiveSkillBatchForStaticScanBackfillInternal, {
-      cursor: args.cursor,
-      batchSize,
-    });
+    const batch = await ctx.runQuery(
+      internal.skills.getActiveSkillBatchForStaticScanBackfillInternal,
+      {
+        cursor: args.cursor,
+        batchSize,
+      },
+    );
 
     let rescanned = args.rescanned ?? 0;
     for (const skill of batch.skills) {
@@ -5468,7 +5499,10 @@ export const changeOwner = mutation({
       lastReviewedAt: now,
       updatedAt: now,
     });
-    await adjustUserSkillStatsForSkillChange(ctx, skill, { ...skill, ownerUserId: args.ownerUserId });
+    await adjustUserSkillStatsForSkillChange(ctx, skill, {
+      ...skill,
+      ownerUserId: args.ownerUserId,
+    });
 
     const embeddings = await listSkillEmbeddingsForSkill(ctx, skill._id);
     for (const embedding of embeddings) {

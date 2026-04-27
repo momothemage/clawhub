@@ -8,6 +8,7 @@ import {
   GitBranch,
   Package,
   Plug,
+  RotateCw,
   ShieldCheck,
   Star,
   Upload,
@@ -21,7 +22,6 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { formatCompactStat } from "../lib/numberFormat";
 import { familyLabel } from "../lib/packageLabels";
-import type { PublicSkill } from "../lib/publicUser";
 
 const emptyPluginPublishSearch = {
   ownerHandle: undefined,
@@ -32,7 +32,40 @@ const emptyPluginPublishSearch = {
   sourceRepo: undefined,
 } as const;
 
-type DashboardSkill = PublicSkill & { pendingReview?: boolean };
+type DashboardSkill = Pick<
+  Doc<"skills">,
+  | "_id"
+  | "_creationTime"
+  | "slug"
+  | "displayName"
+  | "summary"
+  | "ownerUserId"
+  | "ownerPublisherId"
+  | "canonicalSkillId"
+  | "forkOf"
+  | "latestVersionId"
+  | "tags"
+  | "capabilityTags"
+  | "badges"
+  | "stats"
+  | "moderationStatus"
+  | "moderationReason"
+  | "moderationVerdict"
+  | "moderationFlags"
+  | "isSuspicious"
+  | "createdAt"
+  | "updatedAt"
+> & {
+  pendingReview?: boolean;
+  qualityDecision?: "pass" | "quarantine" | "reject";
+  latestVersion: {
+    version: string;
+    createdAt: number;
+    vtStatus: string | null;
+    llmStatus: string | null;
+    staticScanStatus: "clean" | "suspicious" | "malicious" | null;
+  } | null;
+};
 
 type DashboardPackage = {
   _id: string;
@@ -107,7 +140,8 @@ function Dashboard() {
 
   useEffect(() => {
     if (selectedPublisherId) return;
-    const personal = publishers?.find((entry) => entry.publisher.kind === "user") ?? publishers?.[0];
+    const personal =
+      publishers?.find((entry) => entry.publisher.kind === "user") ?? publishers?.[0];
     if (personal?.publisher._id) {
       setSelectedPublisherId(personal.publisher._id);
     }
@@ -136,7 +170,8 @@ function Dashboard() {
             Welcome to ClawHub
           </h1>
           <p className="empty-state-body">
-            You're signed in as @{ownerHandle}. Get started by publishing your first skill or plugin.
+            You're signed in as @{ownerHandle}. Get started by publishing your first skill or
+            plugin.
           </p>
           <div className="flex gap-3 justify-center">
             <Button asChild variant="primary">
@@ -170,12 +205,8 @@ function Dashboard() {
     <main className="section">
       <div className="dashboard-header">
         <div>
-          <h1 className="section-title m-0">
-            Publisher Dashboard
-          </h1>
-          <p className="section-subtitle m-0">
-            Manage your published skills and plugins.
-          </p>
+          <h1 className="section-title m-0">Publisher Dashboard</h1>
+          <p className="section-subtitle m-0">Manage your published skills and plugins.</p>
         </div>
         <div className="flex gap-2 flex-wrap">
           {publishers && publishers.length > 0 ? (
@@ -198,10 +229,7 @@ function Dashboard() {
             </Link>
           </Button>
           <Button asChild>
-            <Link
-              to="/publish-plugin"
-              search={{ ...emptyPluginPublishSearch, ownerHandle }}
-            >
+            <Link to="/publish-plugin" search={{ ...emptyPluginPublishSearch, ownerHandle }}>
               <Plug className="h-4 w-4" aria-hidden="true" />
               Publish Plugin
             </Link>
@@ -223,7 +251,8 @@ function Dashboard() {
             {skills.length === 0 ? (
               <div className="dashboard-inline-empty">
                 <div className="dashboard-inline-empty-copy">
-                  <strong>No skills yet.</strong> Publish your first skill to share it with the community.
+                  <strong>No skills yet.</strong> Publish your first skill to share it with the
+                  community.
                 </div>
                 <Button asChild variant="primary">
                   <Link to="/publish-skill" search={{ updateSlug: undefined }}>
@@ -259,13 +288,11 @@ function Dashboard() {
             {packages.length === 0 ? (
               <div className="dashboard-inline-empty">
                 <div className="dashboard-inline-empty-copy">
-                  <strong>No plugins yet.</strong> Publish your first plugin release to validate and distribute it.
+                  <strong>No plugins yet.</strong> Publish your first plugin release to validate and
+                  distribute it.
                 </div>
                 <Button asChild variant="primary">
-                  <Link
-                    to="/publish-plugin"
-                    search={{ ...emptyPluginPublishSearch, ownerHandle }}
-                  >
+                  <Link to="/publish-plugin" search={{ ...emptyPluginPublishSearch, ownerHandle }}>
                     <Plug className="h-4 w-4" aria-hidden="true" />
                     Publish Plugin
                   </Link>
@@ -292,6 +319,23 @@ function Dashboard() {
 }
 
 function SkillRow({ skill, ownerHandle }: { skill: DashboardSkill; ownerHandle: string | null }) {
+  const status = skillDashboardStatus(skill);
+  const latestScanLabel = skill.latestVersion
+    ? [
+        releaseStatusLabel("VT", skill.latestVersion.vtStatus, "unknown"),
+        releaseStatusLabel("OpenClaw", skill.latestVersion.llmStatus),
+        releaseStatusLabel("Static", skill.latestVersion.staticScanStatus),
+      ]
+    : ["No release scan data"];
+  const showRescan =
+    status.key !== "visible" ||
+    skill.latestVersion?.vtStatus === "suspicious" ||
+    skill.latestVersion?.vtStatus === "malicious" ||
+    skill.latestVersion?.llmStatus === "suspicious" ||
+    skill.latestVersion?.llmStatus === "malicious" ||
+    skill.latestVersion?.staticScanStatus === "suspicious" ||
+    skill.latestVersion?.staticScanStatus === "malicious";
+
   return (
     <div className="dashboard-list-row">
       <div className="dashboard-list-primary">
@@ -304,16 +348,15 @@ function SkillRow({ skill, ownerHandle }: { skill: DashboardSkill; ownerHandle: 
             {skill.displayName}
           </Link>
           <span className="dashboard-list-id">/{skill.slug}</span>
-          {skill.pendingReview ? (
-            <Badge variant="pending">
-              <Clock className="h-3 w-3" aria-hidden="true" />
-              Pending checks
-            </Badge>
-          ) : null}
+          <Badge variant={status.variant}>
+            {status.key === "pending" ? <Clock className="h-3 w-3" aria-hidden="true" /> : null}
+            {status.label}
+          </Badge>
         </div>
         <div className="dashboard-inline-metrics">
           <span>
-            <ArrowDownToLine size={13} aria-hidden="true" /> {formatCompactStat(skill.stats.downloads)}
+            <ArrowDownToLine size={13} aria-hidden="true" />{" "}
+            {formatCompactStat(skill.stats.downloads)}
           </span>
           <span>
             <Star size={13} aria-hidden="true" /> {formatCompactStat(skill.stats.stars)}
@@ -325,19 +368,16 @@ function SkillRow({ skill, ownerHandle }: { skill: DashboardSkill; ownerHandle: 
       </div>
       <div className="dashboard-list-summary">{skill.summary ?? "No summary provided."}</div>
       <div className="dashboard-list-status">
-        {skill.pendingReview ? (
-          <>
-            <span className="dashboard-inline-status-item">
-              <ShieldCheck size={13} aria-hidden="true" />
-              VT pending
-            </span>
-            <span className="dashboard-inline-status-note">
-              Hidden until verification checks finish.
-            </span>
-          </>
-        ) : (
-          <span className="dashboard-inline-status-note">Visible</span>
-        )}
+        <span className="dashboard-inline-status-item">
+          <ShieldCheck size={13} aria-hidden="true" />
+          {status.label}
+        </span>
+        <span className="dashboard-inline-status-note">{status.description}</span>
+        {latestScanLabel.map((label) => (
+          <span key={label} className="dashboard-inline-status-note">
+            {label}
+          </span>
+        ))}
       </div>
       <div className="dashboard-row-actions">
         <Button asChild size="sm">
@@ -347,16 +387,105 @@ function SkillRow({ skill, ownerHandle }: { skill: DashboardSkill; ownerHandle: 
           </Link>
         </Button>
         <Button asChild variant="ghost" size="sm">
-          <Link
-            to="/$owner/$slug"
-            params={{ owner: ownerHandle ?? "unknown", slug: skill.slug }}
+          <Link to="/$owner/$slug" params={{ owner: ownerHandle ?? "unknown", slug: skill.slug }}>
+            <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+            Security
+          </Link>
+        </Button>
+        {showRescan ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled
+            title="Owner rescan requests are handled by the rescan request backend."
           >
+            <RotateCw className="h-3 w-3" aria-hidden="true" />
+            Request Rescan
+          </Button>
+        ) : null}
+        <Button asChild variant="ghost" size="sm">
+          <Link to="/$owner/$slug" params={{ owner: ownerHandle ?? "unknown", slug: skill.slug }}>
             View
           </Link>
         </Button>
       </div>
     </div>
   );
+}
+
+function skillDashboardStatus(skill: DashboardSkill): {
+  key: "visible" | "pending" | "suspicious" | "blocked" | "hidden" | "removed" | "quality";
+  label: string;
+  description: string;
+  variant: "default" | "pending" | "warning" | "destructive" | "success";
+} {
+  const flags = skill.moderationFlags ?? [];
+  const reason = skill.moderationReason ?? "";
+  if (skill.moderationStatus === "removed") {
+    return {
+      key: "removed",
+      label: "Removed",
+      description: "Removed from public inventory by moderation.",
+      variant: "destructive",
+    };
+  }
+  if (flags.includes("blocked.malware") || skill.moderationVerdict === "malicious") {
+    return {
+      key: "blocked",
+      label: "Blocked",
+      description:
+        "Unavailable publicly because automated security checks found malicious content.",
+      variant: "destructive",
+    };
+  }
+  if (skill.pendingReview || reason === "pending.scan" || reason === "pending.scan.stale") {
+    return {
+      key: "pending",
+      label: "Pending checks",
+      description: "Hidden until security verification checks finish.",
+      variant: "pending",
+    };
+  }
+  if (
+    skill.qualityDecision === "quarantine" ||
+    skill.qualityDecision === "reject" ||
+    reason === "quality.low"
+  ) {
+    return {
+      key: "quality",
+      label: "Quality held",
+      description: "Unavailable while quality review is holding this release.",
+      variant: "warning",
+    };
+  }
+  if (
+    skill.isSuspicious ||
+    flags.includes("flagged.suspicious") ||
+    skill.moderationVerdict === "suspicious"
+  ) {
+    return {
+      key: "suspicious",
+      label: "Suspicious",
+      description:
+        "Visible to you, but public surfaces warn or suppress it because it was flagged.",
+      variant: "warning",
+    };
+  }
+  if (skill.moderationStatus === "hidden") {
+    return {
+      key: "hidden",
+      label: "Hidden",
+      description: "Hidden from public catalog surfaces.",
+      variant: "warning",
+    };
+  }
+  return {
+    key: "visible",
+    label: "Visible",
+    description: "Available on public catalog surfaces.",
+    variant: "success",
+  };
 }
 
 function scanStatusLabel(status: string | null | undefined) {
@@ -407,7 +536,19 @@ function PackageStatusTag({
 function PackageRow({ pkg, ownerHandle }: { pkg: DashboardPackage; ownerHandle: string }) {
   const scanLabel = scanStatusLabel(pkg.scanStatus);
   const nextVersion = pkg.latestVersion ? semver.inc(pkg.latestVersion, "patch") : null;
-  const sourceLabel = pkg.sourceRepo?.replace(/^https?:\/\/github\.com\//, "").replace(/\.git$/, "");
+  const sourceLabel = pkg.sourceRepo
+    ?.replace(/^https?:\/\/github\.com\//, "")
+    .replace(/\.git$/, "");
+  const showRescan =
+    pkg.scanStatus === "pending" ||
+    pkg.scanStatus === "suspicious" ||
+    pkg.scanStatus === "malicious" ||
+    pkg.latestRelease?.vtStatus === "suspicious" ||
+    pkg.latestRelease?.vtStatus === "malicious" ||
+    pkg.latestRelease?.llmStatus === "suspicious" ||
+    pkg.latestRelease?.llmStatus === "malicious" ||
+    pkg.latestRelease?.staticScanStatus === "suspicious" ||
+    pkg.latestRelease?.staticScanStatus === "malicious";
   const scanTone =
     pkg.scanStatus === "pending"
       ? "pending"
@@ -452,7 +593,8 @@ function PackageRow({ pkg, ownerHandle }: { pkg: DashboardPackage; ownerHandle: 
         </div>
         <div className="dashboard-inline-metrics">
           <span>
-            <ArrowDownToLine size={13} aria-hidden="true" /> {formatCompactStat(pkg.stats.downloads)}
+            <ArrowDownToLine size={13} aria-hidden="true" />{" "}
+            {formatCompactStat(pkg.stats.downloads)}
           </span>
           <span>
             <Star size={13} aria-hidden="true" /> {formatCompactStat(pkg.stats.stars)}
@@ -516,6 +658,24 @@ function PackageRow({ pkg, ownerHandle }: { pkg: DashboardPackage; ownerHandle: 
             View
           </Link>
         </Button>
+        <Button asChild variant="ghost" size="sm">
+          <Link to="/plugins/$name" params={{ name: pkg.name }}>
+            <ShieldCheck className="h-3 w-3" aria-hidden="true" />
+            Security
+          </Link>
+        </Button>
+        {showRescan ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled
+            title="Owner rescan requests are handled by the rescan request backend."
+          >
+            <RotateCw className="h-3 w-3" aria-hidden="true" />
+            Request Rescan
+          </Button>
+        ) : null}
       </div>
     </div>
   );
