@@ -786,14 +786,14 @@ describe("search helpers", () => {
   it("only hydrates new embedding IDs on subsequent iterations (incremental)", async () => {
     generateEmbeddingMock.mockResolvedValueOnce([0, 1, 2]);
 
-    // limit=10 → candidateLimit starts at 50, maxCandidate=200.
-    // First iteration must return exactly candidateLimit (50) to trigger expansion.
-    const firstBatch = Array.from({ length: 50 }, (_, i) => ({
+    // limit=50 -> candidateLimit starts at 200, maxCandidate=256.
+    // First iteration must return exactly candidateLimit (200) to trigger expansion.
+    const firstBatch = Array.from({ length: 200 }, (_, i) => ({
       _id: `skillEmbeddings:e${i}`,
       _score: 0.5 - i * 0.001,
     }));
-    // Second iteration returns 60 results (50 old + 10 new).
-    // 60 < next candidateLimit (100), so the loop breaks.
+    // Second iteration returns 210 results (200 old + 10 new).
+    // 210 < next candidateLimit (256), so the loop breaks.
     const secondBatch = [
       ...firstBatch,
       ...Array.from({ length: 10 }, (_, i) => ({
@@ -833,12 +833,12 @@ describe("search helpers", () => {
 
     await searchSkillsHandler(
       { vectorSearch: vectorSearchMock, runQuery },
-      { query: "test", limit: 10 },
+      { query: "test", limit: 50 },
     );
 
     // Should have been called twice, but second call should only have new IDs
     expect(hydrateCalls).toHaveLength(2);
-    expect(hydrateCalls[0]).toHaveLength(50);
+    expect(hydrateCalls[0]).toHaveLength(200);
     expect(hydrateCalls[1]).toHaveLength(10);
     // Verify no overlap between the two hydrate calls
     const firstSet = new Set(hydrateCalls[0]);
@@ -871,10 +871,10 @@ describe("search helpers", () => {
     // Regression test for scoreById overwrite bug.
     //
     // Setup:
-    //   limit=10  →  candidateLimit starts at 50, maxCandidate=200
-    //   Iteration 1: vectorSearch returns exactly 50 results (= candidateLimit)
+    //   limit=50  ->  candidateLimit starts at 200, maxCandidate=256
+    //   Iteration 1: vectorSearch returns exactly 200 results (= candidateLimit)
     //                → results.length < candidateLimit is false → loop continues
-    //   Iteration 2: vectorSearch returns 2 results (< 100) → loop exits
+    //   Iteration 2: vectorSearch returns 2 results (< 256) → loop exits
     //
     // skillA appears ONLY in iteration 1 (score 0.95).
     // skillB appears ONLY in iteration 2 (score 0.5).
@@ -896,15 +896,15 @@ describe("search helpers", () => {
       downloads: 50,
     });
 
-    // Iteration 1: exactly 50 entries so the loop does NOT exit early.
-    // skillA is entry 0; entries 1-49 are fillers filtered out by hydrateResults.
-    const iter1Results = Array.from({ length: 50 }, (_, i) => ({
+    // Iteration 1: exactly 200 entries so the loop does NOT exit early.
+    // skillA is entry 0; entries 1-199 are fillers filtered out by hydrateResults.
+    const iter1Results = Array.from({ length: 200 }, (_, i) => ({
       _id: i === 0 ? "skillEmbeddings:a" : `skillEmbeddings:filler${i}`,
       _score: i === 0 ? 0.95 : 0.1,
     }));
 
     // Iteration 2: 2 entries, both new IDs (skillA is absent from this batch).
-    // results.length (2) < candidateLimit (100) → loop exits.
+    // results.length (2) < candidateLimit (256) → loop exits.
     const iter2Results = [
       { _id: "skillEmbeddings:b", _score: 0.5 },
       { _id: "skillEmbeddings:filler50", _score: 0.08 },
@@ -943,7 +943,7 @@ describe("search helpers", () => {
           .mockResolvedValueOnce(iter2Results), // iteration 2: 2 results, loop exits
         runQuery,
       },
-      { query: "baidu yijian", limit: 10 },
+      { query: "baidu yijian", limit: 50 },
     );
 
     const resultA = result.find(

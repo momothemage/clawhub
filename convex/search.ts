@@ -165,8 +165,10 @@ export const searchSkills: ReturnType<typeof action> = action({
     }
     const limit = args.limit ?? 10;
     // Convex vectorSearch max limit is 256; clamp candidate sizes accordingly.
+    // Keep the initial pool large enough to catch moderate-vector matches
+    // that win after lexical and popularity scoring, even for small limits.
     const maxCandidate = Math.min(Math.max(limit * 10, 200), 256);
-    let candidateLimit = Math.min(Math.max(limit * 3, 50), 256);
+    let candidateLimit = Math.min(Math.max(limit * 3, 200), 256);
     let hydrated: SkillSearchEntry[] = [];
     const seenEmbeddingIds = new Set<Id<"skillEmbeddings">>();
     let scoreById = new Map<Id<"skillEmbeddings">, number>();
@@ -459,8 +461,9 @@ export const searchSouls: ReturnType<typeof action> = action({
     }
     const limit = args.limit ?? 10;
     // Convex vectorSearch max limit is 256; clamp candidate sizes accordingly.
+    // Match searchSkills so soul search does not miss boosted exact matches.
     const maxCandidate = Math.min(Math.max(limit * 10, 200), 256);
-    let candidateLimit = Math.min(Math.max(limit * 3, 50), 256);
+    let candidateLimit = Math.min(Math.max(limit * 3, 200), 256);
     let hydrated: HydratedSoulEntry[] = [];
     let scoreById = new Map<Id<"soulEmbeddings">, number>();
     let exactMatches: HydratedSoulEntry[] = [];
