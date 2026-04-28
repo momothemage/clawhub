@@ -3,6 +3,7 @@ import { normalizeTextContentType } from "clawhub-schema";
 import { getPage, type IndexKey, paginator } from "convex-helpers/server/pagination";
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v, type Value } from "convex/values";
+import semver from "semver";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
@@ -37,6 +38,10 @@ import {
   isPublicSkillDoc,
   readGlobalPublicSkillsCount,
 } from "./lib/globalStats";
+import {
+  TRENDING_LEADERBOARD_KIND,
+  TRENDING_NON_SUSPICIOUS_LEADERBOARD_KIND,
+} from "./lib/leaderboards";
 import {
   applyManualOverrideToSkillPatch,
   isManualOverrideReason,
@@ -432,6 +437,24 @@ function shouldSyncModerationFromLatestVersion(
   return (
     typeof skill.moderationReason === "string" && skill.moderationReason.startsWith("scanner.")
   );
+}
+
+function shouldBackfillLatestSkillModeration(
+  skill: Pick<
+    Doc<"skills">,
+    | "latestVersionId"
+    | "manualOverride"
+    | "moderationStatus"
+    | "moderationReason"
+    | "moderationSourceVersionId"
+    | "softDeletedAt"
+  >,
+) {
+  if (skill.manualOverride) return false;
+  if (!shouldSyncModerationFromLatestVersion(skill)) return false;
+  if (!skill.latestVersionId) return false;
+  if (skill.moderationSourceVersionId === skill.latestVersionId) return false;
+  return isScannerManagedReason(skill.moderationReason as string | undefined);
 }
 
 async function syncSkillModerationFromLatestVersion(
@@ -2877,6 +2900,42 @@ export const listPublicPageV4 = query({
   },
 });
 
+export const listPublicTrendingPage = query({
+  args: {
+    limit: v.optional(v.number()),
+    nonSuspiciousOnly: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const limit = clampInt(args.limit ?? 25, 1, MAX_PUBLIC_LIST_LIMIT);
+    const kind = args.nonSuspiciousOnly
+      ? TRENDING_NON_SUSPICIOUS_LEADERBOARD_KIND
+      : TRENDING_LEADERBOARD_KIND;
+    const leaderboard = await ctx.db
+      .query("skillLeaderboards")
+      .withIndex("by_kind", (q) => q.eq("kind", kind))
+      .order("desc")
+      .first();
+
+    if (!leaderboard) return { items: [], nextCursor: null };
+
+    const items: PublicSkillEntry[] = [];
+    for (const entry of leaderboard.items) {
+      const digest = await ctx.db
+        .query("skillSearchDigest")
+        .withIndex("by_skill", (q) => q.eq("skillId", entry.skillId))
+        .unique();
+      if (!digest) continue;
+      if (args.nonSuspiciousOnly && digest.isSuspicious) continue;
+      const item = buildPublicSkillEntryFromDigest(digest);
+      if (!item) continue;
+      items.push(item);
+      if (items.length >= limit) break;
+    }
+
+    return { items, nextCursor: null };
+  },
+});
+
 function buildPublicSkillEntryFromDigest(
   digest: Doc<"skillSearchDigest">,
 ): PublicSkillEntry | null {
@@ -4757,6 +4816,10 @@ export const approveSkillByHashInternal = internalMutation({
     // Update the skill's moderation status based on scan result
     const skill = await ctx.db.get(version.skillId);
     if (skill) {
+      if (skill.latestVersionId && skill.latestVersionId !== version._id) {
+        return { ok: true, skillId: version.skillId, versionId: version._id };
+      }
+
       const owner = skill.ownerUserId ? await ctx.db.get(skill.ownerUserId) : null;
       const isMalicious = args.status === "malicious";
       const isSuspicious = args.status === "suspicious";
@@ -4881,6 +4944,7 @@ export const escalateByVtInternal = internalMutation({
 
     const skill = await ctx.db.get(version.skillId);
     if (!skill) return;
+    if (skill.latestVersionId && skill.latestVersionId !== version._id) return;
 
     const isMalicious = args.status === "malicious";
     const existingFlags: string[] = (skill.moderationFlags as string[] | undefined) ?? [];
@@ -4958,6 +5022,39 @@ export const escalateByVtInternal = internalMutation({
         slug: skill.slug,
       });
     }
+  },
+});
+
+/**
+ * Re-sync skill-level moderation from each skill's current latest version.
+ * This repairs rows that were previously stamped from an older version scan.
+ */
+export const backfillLatestSkillModerationInternal = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? 100, 10, 200);
+    const { page, continueCursor, isDone } = await ctx.db
+      .query("skills")
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize });
+
+    let patched = 0;
+    for (const skill of page) {
+      if (!shouldBackfillLatestSkillModeration(skill)) continue;
+      await syncSkillModerationFromLatestVersion(ctx, skill, Date.now());
+      patched++;
+    }
+
+    if (!isDone) {
+      await ctx.scheduler.runAfter(0, internal.skills.backfillLatestSkillModerationInternal, {
+        cursor: continueCursor,
+        batchSize: args.batchSize,
+      });
+    }
+
+    return { patched, isDone, scanned: page.length };
   },
 });
 
@@ -6623,20 +6720,55 @@ export const insertVersion = internalMutation({
       softDeletedAt: undefined,
     });
 
+    // Only promote this version to `latest` if it is strictly greater than the
+    // currently published latest version (by semver). This allows backport /
+    // hotfix publishes on lower version lines (e.g. shipping 1.0.1 while 2.x is
+    // live) without clobbering the latest pointer, tag, embedding, or summary.
+    //
+    // The schema only enforces `v.string()` on `latestVersionSummary.version`,
+    // so legacy / imported skills may persist non-semver values (e.g. "latest",
+    // "2024-12"). Calling `semver.gt` with a malformed right-hand operand
+    // throws `TypeError: Invalid Version`, which would crash the publish
+    // mutation. Short-circuit to treating the incoming publish as the new
+    // latest in that case, which self-heals the skill back into a valid
+    // semver latest pointer (args.version is already validated upstream in
+    // publishVersionForUser / githubImport).
+    const prevLatestVersion = skill.latestVersionSummary?.version;
+    const isNewLatest =
+      !prevLatestVersion ||
+      !semver.valid(prevLatestVersion) ||
+      semver.gt(args.version, prevLatestVersion);
+
     const nextTags: Record<string, Id<"skillVersions">> = { ...skill.tags };
-    nextTags.latest = versionId;
+    if (isNewLatest) {
+      nextTags.latest = versionId;
+    }
+    // `latest` is a reserved tag: it is managed exclusively by the semver
+    // comparison above so that backport publishes cannot clobber the latest
+    // pointer. Silently drop it (case-insensitively) from caller-provided tags
+    // to prevent a trivial bypass via args.tags: ["latest"].
     for (const tag of args.tags ?? []) {
+      if (tag.toLowerCase() === "latest") continue;
       nextTags[tag] = versionId;
     }
 
     const latestBefore = skill.latestVersionId;
 
-    const nextSummary =
+    const derivedSummary =
       args.summary ?? getFrontmatterValue(args.parsed.frontmatter, "description") ?? skill.summary;
+    // Skill-level fields (displayName / summary / capabilityTags) should only
+    // follow the latest version. Backport publishes must not leak their values
+    // into the skill card shown on the listing / detail pages.
+    const nextSummary = isNewLatest ? derivedSummary : skill.summary;
+    // Backport publishes must not promote their displayName/summary onto the
+    // skill card (see basePatch below), so the moderation evaluation must use
+    // the same values that will actually be persisted. Otherwise we would
+    // persist flags derived from text the user can never see on the card.
+    const nextDisplayName = isNewLatest ? args.displayName : skill.displayName;
     const derivedFlags = deriveModerationFlags({
       skill: {
         slug: skill.slug,
-        displayName: args.displayName,
+        displayName: nextDisplayName,
         summary: nextSummary ?? undefined,
       },
       parsed: args.parsed,
@@ -6650,19 +6782,21 @@ export const insertVersion = internalMutation({
       new Set([...(derivedFlags ?? []), ...(moderationSnapshot.legacyFlags ?? [])]),
     );
     const basePatch: SkillModerationPatch = {
-      displayName: args.displayName,
+      displayName: nextDisplayName,
       summary: nextSummary ?? undefined,
       ownerPublisherId: skill.ownerPublisherId ?? ownerPublisherId,
-      latestVersionId: versionId,
-      latestVersionSummary: {
-        version: args.version,
-        createdAt: now,
-        changelog: args.changelog,
-        changelogSource: args.changelogSource,
-        clawdis: args.parsed.clawdis,
-      },
+      latestVersionId: isNewLatest ? versionId : skill.latestVersionId,
+      latestVersionSummary: isNewLatest
+        ? {
+            version: args.version,
+            createdAt: now,
+            changelog: args.changelog,
+            changelogSource: args.changelogSource,
+            clawdis: args.parsed.clawdis,
+          }
+        : skill.latestVersionSummary,
       tags: nextTags,
-      capabilityTags: args.capabilityTags,
+      capabilityTags: isNewLatest ? args.capabilityTags : skill.capabilityTags,
       stats: { ...skill.stats, versions: skill.stats.versions + 1 },
       softDeletedAt: undefined,
       moderationStatus: initialModerationStatus,
@@ -6714,9 +6848,9 @@ export const insertVersion = internalMutation({
       versionId,
       ownerId: userId,
       embedding: args.embedding,
-      isLatest: true,
+      isLatest: isNewLatest,
       isApproved,
-      visibility: embeddingVisibilityFor(true, isApproved),
+      visibility: embeddingVisibilityFor(isNewLatest, isApproved),
       updatedAt: now,
     });
     // Lightweight lookup so search hydration can skip reading the 12KB embedding doc
@@ -6725,7 +6859,10 @@ export const insertVersion = internalMutation({
       skillId: skill._id,
     });
 
-    if (latestBefore) {
+    // Only demote the previous latest embedding when this publish actually
+    // replaces `latest`. Backport publishes must leave the existing latest
+    // embedding untouched so vector search keeps returning the right version.
+    if (isNewLatest && latestBefore) {
       const previousEmbedding = await ctx.db
         .query("skillEmbeddings")
         .withIndex("by_version", (q) => q.eq("versionId", latestBefore))

@@ -410,9 +410,9 @@ describe("httpApiV1 handlers", () => {
 
   it("lists skills with resolved tags using batch query", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if ("cursor" in args || "limit" in args) {
+      if ("cursor" in args || "numItems" in args) {
         return {
-          items: [
+          page: [
             {
               skill: {
                 _id: "skills:1",
@@ -448,9 +448,9 @@ describe("httpApiV1 handlers", () => {
 
   it("batches tag resolution across multiple skills into single query", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if ("cursor" in args || "limit" in args) {
+      if ("cursor" in args || "numItems" in args) {
         return {
-          items: [
+          page: [
             {
               skill: {
                 _id: "skills:1",
@@ -703,18 +703,25 @@ describe("httpApiV1 handlers", () => {
   });
 
   it("lists skills supports sort aliases", async () => {
-    const checks: Array<[string, string]> = [
+    const checks: Array<[string, string | null]> = [
       ["rating", "stars"],
-      ["installs", "installsCurrent"],
-      ["installs-all-time", "installsAllTime"],
-      ["trending", "trending"],
+      ["installs", "installs"],
+      ["installs-all-time", "installs"],
+      ["unknown", "updated"],
+      ["trending", null],
     ];
 
     for (const [input, expected] of checks) {
       const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-        if ("sort" in args || "cursor" in args || "limit" in args) {
-          expect(args.sort).toBe(expected);
-          return { items: [], nextCursor: null };
+        if ("sort" in args || "cursor" in args || "numItems" in args || "limit" in args) {
+          if (expected === null) {
+            expect(args).not.toHaveProperty("sort");
+          } else {
+            expect(args.sort).toBe(expected);
+          }
+          return expected === null
+            ? { items: [], nextCursor: null }
+            : { page: [], nextCursor: null };
         }
         return null;
       });
@@ -729,9 +736,9 @@ describe("httpApiV1 handlers", () => {
 
   it("lists skills forwards nonSuspiciousOnly", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if ("sort" in args || "cursor" in args || "limit" in args) {
+      if ("sort" in args || "cursor" in args || "numItems" in args) {
         expect(args.nonSuspiciousOnly).toBe(true);
-        return { items: [], nextCursor: null };
+        return { page: [], nextCursor: null };
       }
       return null;
     });
@@ -745,9 +752,9 @@ describe("httpApiV1 handlers", () => {
 
   it("lists skills forwards legacy nonSuspicious alias", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if ("sort" in args || "cursor" in args || "limit" in args) {
+      if ("sort" in args || "cursor" in args || "numItems" in args) {
         expect(args.nonSuspiciousOnly).toBe(true);
-        return { items: [], nextCursor: null };
+        return { page: [], nextCursor: null };
       }
       return null;
     });
@@ -761,9 +768,9 @@ describe("httpApiV1 handlers", () => {
 
   it("lists skills prefers canonical nonSuspiciousOnly over legacy alias", async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
-      if ("sort" in args || "cursor" in args || "limit" in args) {
+      if ("sort" in args || "cursor" in args || "numItems" in args) {
         expect(args.nonSuspiciousOnly).toBeUndefined();
-        return { items: [], nextCursor: null };
+        return { page: [], nextCursor: null };
       }
       return null;
     });
@@ -4071,6 +4078,34 @@ describe("httpApiV1 handlers", () => {
       }),
     );
     expect(setCall?.[1]).not.toHaveProperty("environment");
+  });
+
+  it("deletes a package", async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: "users:1",
+      user: { _id: "users:1", handle: "p" },
+    } as never);
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ("key" in args) return okRate();
+      return { ok: true };
+    });
+
+    const response = await __handlers.packagesDeleteRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request("https://example.com/api/v1/packages/%40openclaw%2Fdemo-plugin", {
+        method: "DELETE",
+        headers: { Authorization: "Bearer clh_test" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        userId: "users:1",
+        name: "@openclaw/demo-plugin",
+      }),
+    );
   });
 
   it("deletes trusted publisher config for a package", async () => {

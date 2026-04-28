@@ -141,6 +141,7 @@ Stores your API token + cached registry URL.
 - Requires semver: `--version 1.2.3`.
 - Publishing a skill means it is released under `MIT-0` on ClawHub.
 - Published skills are free to use, modify, and redistribute without attribution.
+- ClawHub does not support paid skills or per-skill pricing.
 - Legacy alias: `publish <path>`.
 
 ### `delete <slug>`
@@ -212,6 +213,36 @@ Stores your API token + cached registry URL.
 - `--fuzzy` resolves the handle via fuzzy user search (admin only).
 - `--yes` skips confirmation.
 
+### `package explore [query...]`
+
+- Browses or searches the unified package catalog via `GET /api/v1/packages` and `GET /api/v1/packages/search`.
+- Use this for plugins and other package-family entries; top-level `search` remains the skill search surface.
+- Flags:
+  - `--family skill|code-plugin|bundle-plugin`
+  - `--official`
+  - `--executes-code`
+  - `--limit <n>` (1-100, default: 25)
+  - `--json`
+
+Examples:
+
+```bash
+clawhub package explore --family code-plugin
+clawhub package explore episodic-claw --family code-plugin
+```
+
+### `package inspect <name>`
+
+- Fetches package metadata without installing.
+- Use this for plugin metadata, compatibility, verification, source, and version/file inspection.
+- `--version <version>`: inspect a specific version (default: latest).
+- `--tag <tag>`: inspect a tagged version (e.g. `latest`).
+- `--versions`: list version history (first page).
+- `--limit <n>`: max versions to list (1-100).
+- `--files`: list files for the selected version.
+- `--file <path>`: fetch raw file content (text files only; 200KB limit).
+- `--json`: machine-readable output.
+
 ### `package publish <source>`
 
 - Publishes a code plugin or bundle plugin via `POST /api/v1/packages`.
@@ -229,6 +260,53 @@ Stores your API token + cached registry URL.
 - `--owner <handle>` lets admins publish under a shared owner account while keeping their own token as the actor.
 - Existing flags (`--family`, `--name`, `--version`, `--source-repo`, `--source-commit`, `--source-ref`, `--source-path`) still work as overrides.
 - Private GitHub repos require `GITHUB_TOKEN`.
+
+#### Recommended local flow
+
+Use `--dry-run` first so you can confirm the resolved package metadata and
+source attribution before creating a live release:
+
+```bash
+clawhub package publish ./my-plugin --family code-plugin --dry-run
+clawhub package publish ./my-plugin --family code-plugin
+```
+
+#### Minimal `package.json` for `--family code-plugin`
+
+External code plugins need a small amount of OpenClaw metadata in
+`package.json`. This minimal manifest is enough for a successful publish:
+
+```json
+{
+  "name": "@myorg/openclaw-my-plugin",
+  "version": "1.0.0",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2"
+    },
+    "build": {
+      "openclawVersion": "2026.3.24-beta.2"
+    }
+  }
+}
+```
+
+Required fields:
+
+- `openclaw.compat.pluginApi`
+- `openclaw.build.openclawVersion`
+
+Notes:
+
+- `package.json.version` is your package release version, but it is not used as
+  a fallback for OpenClaw compatibility/build validation.
+- `openclaw.compat.minGatewayVersion` and
+  `openclaw.build.pluginSdkVersion` are optional extras if you want to publish
+  more detailed compatibility metadata.
+- If you are using an older `clawhub` CLI release, upgrade before publishing so
+  the local preflight checks run before upload.
 
 #### GitHub Actions
 

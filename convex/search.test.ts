@@ -17,14 +17,16 @@ vi.mock("./lib/badges", () => ({
     Boolean(skill.badges?.highlighted),
 }));
 
-type WrappedHandler = {
-  _handler: (
-    ctx: unknown,
-    args: unknown,
-  ) => Promise<Array<{ skill: { slug: string; _id: string } }>>;
+type WrappedHandler<Result = { skill: { slug: string; _id: string } }> = {
+  _handler: (ctx: unknown, args: unknown) => Promise<Array<Result>>;
 };
 
-const searchSkillsHandler = (searchSkills as unknown as WrappedHandler)._handler;
+const searchSkillsHandler = (
+  searchSkills as unknown as WrappedHandler<{
+    skill: { slug: string; _id: string };
+    score: number;
+  }>
+)._handler;
 const lexicalFallbackSkillsHandler = (lexicalFallbackSkills as unknown as WrappedHandler)._handler;
 const hydrateResultsHandler = (
   hydrateResults as unknown as {
@@ -60,6 +62,39 @@ describe("search helpers", () => {
     expect(result).toHaveLength(1);
     expect(result[0].skill.slug).toBe("orf");
     expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ query: "orf", queryTokens: ["orf"] }),
+    );
+  });
+
+  it("falls back to lexical skill search when embedding generation fails", async () => {
+    generateEmbeddingMock.mockRejectedValueOnce(new Error("API unavailable"));
+    const fallback = [
+      {
+        skill: makePublicSkill({ id: "skills:orf", slug: "orf", displayName: "ORF" }),
+        version: null,
+        ownerHandle: "steipete",
+        owner: null,
+      },
+    ];
+    const vectorSearch = vi.fn().mockRejectedValue(new Error("should not be called"));
+    const runQuery = vi
+      .fn()
+      .mockResolvedValueOnce(null) // getExactSkillSlugMatch
+      .mockResolvedValueOnce(fallback); // lexicalFallbackSkills
+
+    const result = await searchSkillsHandler(
+      {
+        vectorSearch,
+        runQuery,
+      },
+      { query: "orf", limit: 10 },
+    );
+
+    expect(vectorSearch).not.toHaveBeenCalled();
+    expect(result).toHaveLength(1);
+    expect(result[0].skill.slug).toBe("orf");
+    expect(runQuery).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.objectContaining({ query: "orf", queryTokens: ["orf"] }),
     );
@@ -213,7 +248,7 @@ describe("search helpers", () => {
       skill: makePublicSkill({
         id: `skills:${index}`,
         slug: `downloader-${index}`,
-        displayName: `Downloader ${index}`,
+        displayName: `Skill Downloader ${index}`,
         downloads: 100 - index,
       }),
       version: null,
@@ -240,14 +275,12 @@ describe("search helpers", () => {
 
     const result = await searchSkillsHandler(
       {
-        vectorSearch: vi
-          .fn()
-          .mockResolvedValue(
-            vectorEntries.map((entry, index) => ({
-              _id: entry.embeddingId,
-              _score: 0.9 - index * 0.01,
-            })),
-          ),
+        vectorSearch: vi.fn().mockResolvedValue(
+          vectorEntries.map((entry, index) => ({
+            _id: entry.embeddingId,
+            _score: 0.9 - index * 0.01,
+          })),
+        ),
         runQuery,
       },
       { query: "skill-downloader", limit: 10 },
@@ -267,7 +300,7 @@ describe("search helpers", () => {
         skill: makePublicSkill({
           id: "skills:1",
           slug: "downloader-1",
-          displayName: "Downloader 1",
+          displayName: "Skill Downloader 1",
           downloads: 50,
         }),
         version: null,
@@ -316,7 +349,7 @@ describe("search helpers", () => {
           ...makePublicSkill({
             id: "skills:1",
             slug: "downloader-1",
-            displayName: "Downloader 1",
+            displayName: "Skill Downloader 1",
             downloads: 50,
           }),
           badges: { highlighted: { byUserId: "users:mod", at: 1 } },
@@ -422,7 +455,7 @@ describe("search helpers", () => {
         skill: makePublicSkill({
           id: "skills:other",
           slug: "downloader-2",
-          displayName: "Downloader 2",
+          displayName: "Skill Downloader 2",
           downloads: 50,
         }),
         version: null,
@@ -630,6 +663,50 @@ describe("search helpers", () => {
     expect(result).toHaveLength(0);
   });
 
+  it("finds recently created skills missed by the updatedAt fallback scan (#1185)", async () => {
+    const newSkill = makeSkillDoc({
+      id: "skills:new",
+      slug: "ai-clipping",
+      displayName: "AI Clipping",
+    });
+    const ctx = makeLexicalCtx({
+      exactSlugSkill: null,
+      recentSkills: [],
+      recentByCreated: [newSkill],
+    });
+
+    const result = await lexicalFallbackSkillsHandler(ctx, {
+      query: "clipping",
+      queryTokens: ["clipping"],
+      limit: 10,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].skill.slug).toBe("ai-clipping");
+  });
+
+  it("deduplicates skills found by both fallback scan windows", async () => {
+    const skill = makeSkillDoc({
+      id: "skills:dup",
+      slug: "orf-dup",
+      displayName: "ORF Dup",
+    });
+    const ctx = makeLexicalCtx({
+      exactSlugSkill: null,
+      recentSkills: [skill],
+      recentByCreated: [skill],
+    });
+
+    const result = await lexicalFallbackSkillsHandler(ctx, {
+      query: "orf",
+      queryTokens: ["orf"],
+      limit: 10,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].skill.slug).toBe("orf-dup");
+  });
+
   it("advances candidate limit until max", () => {
     expect(__test.getNextCandidateLimit(50, 1000)).toBe(100);
     expect(__test.getNextCandidateLimit(800, 1000)).toBe(1000);
@@ -641,6 +718,25 @@ describe("search helpers", () => {
     const exactScore = __test.scoreSkillResult(queryTokens, 0.4, "Notion Sync", "notion-sync", 5);
     const looseScore = __test.scoreSkillResult(queryTokens, 0.6, "Notes Sync", "notes-sync", 500);
     expect(exactScore).toBeGreaterThan(looseScore);
+  });
+
+  it("boosts exact full slug over a longer slug containing all query tokens", () => {
+    const queryTokens = tokenize("self-improving-agent");
+    const exactScore = __test.scoreSkillResult(
+      queryTokens,
+      0.5,
+      "Self Improving Agent",
+      "self-improving-agent",
+      10,
+    );
+    const containingScore = __test.scoreSkillResult(
+      queryTokens,
+      0.6,
+      "Self Improving Agent",
+      "xiucheng-self-improving-agent",
+      100,
+    );
+    expect(exactScore).toBeGreaterThan(containingScore);
   });
 
   it("adds a popularity prior for equally relevant matches", () => {
@@ -786,14 +882,14 @@ describe("search helpers", () => {
   it("only hydrates new embedding IDs on subsequent iterations (incremental)", async () => {
     generateEmbeddingMock.mockResolvedValueOnce([0, 1, 2]);
 
-    // limit=10 → candidateLimit starts at 50, maxCandidate=200.
-    // First iteration must return exactly candidateLimit (50) to trigger expansion.
-    const firstBatch = Array.from({ length: 50 }, (_, i) => ({
+    // limit=50 -> candidateLimit starts at 200, maxCandidate=256.
+    // First iteration must return exactly candidateLimit (200) to trigger expansion.
+    const firstBatch = Array.from({ length: 200 }, (_, i) => ({
       _id: `skillEmbeddings:e${i}`,
       _score: 0.5 - i * 0.001,
     }));
-    // Second iteration returns 60 results (50 old + 10 new).
-    // 60 < next candidateLimit (100), so the loop breaks.
+    // Second iteration returns 210 results (200 old + 10 new).
+    // 210 < next candidateLimit (256), so the loop breaks.
     const secondBatch = [
       ...firstBatch,
       ...Array.from({ length: 10 }, (_, i) => ({
@@ -833,12 +929,12 @@ describe("search helpers", () => {
 
     await searchSkillsHandler(
       { vectorSearch: vectorSearchMock, runQuery },
-      { query: "test", limit: 10 },
+      { query: "test", limit: 50 },
     );
 
     // Should have been called twice, but second call should only have new IDs
     expect(hydrateCalls).toHaveLength(2);
-    expect(hydrateCalls[0]).toHaveLength(50);
+    expect(hydrateCalls[0]).toHaveLength(200);
     expect(hydrateCalls[1]).toHaveLength(10);
     // Verify no overlap between the two hydrate calls
     const firstSet = new Set(hydrateCalls[0]);
@@ -865,6 +961,96 @@ describe("search helpers", () => {
     const merged = __test.mergeUniqueBySkillId(primary, fallback);
     expect(merged).toHaveLength(2);
     expect(merged.map((entry) => entry.skill._id)).toEqual(["skills:1", "skills:2"]);
+  });
+
+  it("preserves vector scores across candidate expansion iterations", async () => {
+    // Regression test for scoreById overwrite bug.
+    //
+    // Setup:
+    //   limit=50  ->  candidateLimit starts at 200, maxCandidate=256
+    //   Iteration 1: vectorSearch returns exactly 200 results (= candidateLimit)
+    //                → results.length < candidateLimit is false → loop continues
+    //   Iteration 2: vectorSearch returns 2 results (< 256) → loop exits
+    //
+    // skillA appears ONLY in iteration 1 (score 0.95).
+    // skillB appears ONLY in iteration 2 (score 0.5).
+    //
+    // With the BUG:  scoreById = new Map(iter2_results) → skillA missing → vectorScore=0
+    // With the FIX:  scoreById.set() merges → skillA retains 0.95
+    generateEmbeddingMock.mockResolvedValueOnce([0, 1, 2]);
+
+    const skillA = makePublicSkill({
+      id: "skills:a",
+      slug: "baidu-yijian-vision",
+      displayName: "Baidu Yijian Vision",
+      downloads: 100,
+    });
+    const skillB = makePublicSkill({
+      id: "skills:b",
+      slug: "baidu-yijian-test",
+      displayName: "Baidu Yijian Test",
+      downloads: 50,
+    });
+
+    // Iteration 1: exactly 200 entries so the loop does NOT exit early.
+    // skillA is entry 0; entries 1-199 are fillers filtered out by hydrateResults.
+    const iter1Results = Array.from({ length: 200 }, (_, i) => ({
+      _id: i === 0 ? "skillEmbeddings:a" : `skillEmbeddings:filler${i}`,
+      _score: i === 0 ? 0.95 : 0.1,
+    }));
+
+    // Iteration 2: 2 entries, both new IDs (skillA is absent from this batch).
+    // results.length (2) < candidateLimit (256) → loop exits.
+    const iter2Results = [
+      { _id: "skillEmbeddings:b", _score: 0.5 },
+      { _id: "skillEmbeddings:filler50", _score: 0.08 },
+    ];
+
+    const runQuery = vi
+      .fn()
+      // hydrateResults iteration 1: 50 new IDs → only skillA survives hydration
+      .mockResolvedValueOnce([
+        {
+          embeddingId: "skillEmbeddings:a",
+          skill: skillA,
+          version: null,
+          ownerHandle: "owner",
+          owner: null,
+        },
+      ])
+      // hydrateResults iteration 2: 2 new IDs → only skillB survives hydration
+      .mockResolvedValueOnce([
+        {
+          embeddingId: "skillEmbeddings:b",
+          skill: skillB,
+          version: null,
+          ownerHandle: "owner",
+          owner: null,
+        },
+      ])
+      // lexicalFallbackSkills (exactMatches < limit after loop exits)
+      .mockResolvedValueOnce([]);
+
+    const result = await searchSkillsHandler(
+      {
+        vectorSearch: vi
+          .fn()
+          .mockResolvedValueOnce(iter1Results) // iteration 1: 50 results, loop continues
+          .mockResolvedValueOnce(iter2Results), // iteration 2: 2 results, loop exits
+        runQuery,
+      },
+      { query: "baidu yijian", limit: 50 },
+    );
+
+    const resultA = result.find(
+      (r: { skill: { slug: string } }) => r.skill.slug === "baidu-yijian-vision",
+    );
+    expect(resultA).toBeDefined();
+    // With scoreById correctly merged: skillA retains vectorScore=0.95.
+    // With the bug (overwrite): skillA.embeddingId absent from iter2 map → vectorScore=0.
+    // Lexical boost for "baidu-yijian-vision" slug matching "baidu yijian" ≈ 0.8 (prefix).
+    // Fix: score ≈ 0.95 + 0.8 + popularity > 1.5; Bug: score ≈ 0 + 0.8 + popularity < 0.9.
+    expect(resultA!.score).toBeGreaterThan(1.0);
   });
 });
 
@@ -922,16 +1108,20 @@ function makeSkillDoc(params: {
 function makeLexicalCtx(params: {
   exactSlugSkill: ReturnType<typeof makeSkillDoc> | null;
   recentSkills: Array<ReturnType<typeof makeSkillDoc>>;
+  recentByCreated?: Array<ReturnType<typeof makeSkillDoc>>;
 }) {
   // Convert skill docs to digest-shaped rows (add skillId + owner fields).
-  const digestRows = params.recentSkills.map((skill) => ({
-    ...skill,
-    skillId: skill._id,
-    ownerHandle: "owner",
-    ownerName: "Owner",
-    ownerDisplayName: "Owner",
-    ownerImage: undefined,
-  }));
+  const toDigestRows = (skills: Array<ReturnType<typeof makeSkillDoc>>) =>
+    skills.map((skill) => ({
+      ...skill,
+      skillId: skill._id,
+      ownerHandle: "owner",
+      ownerName: "Owner",
+      ownerDisplayName: "Owner",
+      ownerImage: undefined,
+    }));
+  const digestByUpdated = toDigestRows(params.recentSkills);
+  const digestByCreated = toDigestRows(params.recentByCreated ?? []);
   return {
     db: {
       query: vi.fn((table: string) => {
@@ -953,7 +1143,14 @@ function makeLexicalCtx(params: {
               if (index === "by_active_updated") {
                 return {
                   order: () => ({
-                    take: vi.fn().mockResolvedValue(digestRows),
+                    take: vi.fn().mockResolvedValue(digestByUpdated),
+                  }),
+                };
+              }
+              if (index === "by_active_created") {
+                return {
+                  order: () => ({
+                    take: vi.fn().mockResolvedValue(digestByCreated),
                   }),
                 };
               }
