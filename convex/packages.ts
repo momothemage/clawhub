@@ -2208,7 +2208,9 @@ export const insertReleaseInternal = internalMutation({
         .withIndex("by_runtime_id", (q) => q.eq("runtimeId", args.runtimeId))
         .unique();
       if (runtimeCollision && runtimeCollision._id !== existing?._id) {
-        throw new ConvexError(`Plugin id "${nextRuntimeIdLabel}" is already claimed by another package`);
+        throw new ConvexError(
+          `Plugin id "${nextRuntimeIdLabel}" is already claimed by another package`,
+        );
       }
     }
 

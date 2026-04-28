@@ -254,6 +254,11 @@ type UnifiedCatalogCursorState = {
   skills: CatalogSourceCursorState;
 };
 
+type PluginCatalogCursorState = {
+  codePlugins: CatalogSourceCursorState;
+  bundlePlugins: CatalogSourceCursorState;
+};
+
 type CatalogPageResult = {
   page: CatalogListItem[];
   isDone: boolean;
@@ -268,6 +273,7 @@ type CatalogSourceState = {
 };
 
 const UNIFIED_CATALOG_CURSOR_PREFIX = "pkgcatalog:";
+const PLUGIN_CATALOG_CURSOR_PREFIX = "pkgplugins:";
 
 function defaultCatalogSourceCursorState(): CatalogSourceCursorState {
   return { cursor: null, offset: 0, pageSize: null, done: false };
@@ -308,6 +314,42 @@ function decodeUnifiedCatalogCursor(raw: string | null | undefined): UnifiedCata
   }
 }
 
+function encodePluginCatalogCursor(state: PluginCatalogCursorState) {
+  return `${PLUGIN_CATALOG_CURSOR_PREFIX}${JSON.stringify(state)}`;
+}
+
+function decodePluginCatalogCursor(raw: string | null | undefined): PluginCatalogCursorState {
+  const normalize = (
+    input: Partial<CatalogSourceCursorState> | undefined,
+  ): CatalogSourceCursorState => ({
+    cursor: typeof input?.cursor === "string" ? input.cursor : null,
+    offset: typeof input?.offset === "number" && input.offset > 0 ? input.offset : 0,
+    pageSize: typeof input?.pageSize === "number" && input.pageSize > 0 ? input.pageSize : null,
+    done: input?.done === true,
+  });
+
+  if (!raw?.startsWith(PLUGIN_CATALOG_CURSOR_PREFIX)) {
+    return {
+      codePlugins: { ...defaultCatalogSourceCursorState(), cursor: raw ?? null },
+      bundlePlugins: defaultCatalogSourceCursorState(),
+    };
+  }
+  try {
+    const parsed = JSON.parse(
+      raw.slice(PLUGIN_CATALOG_CURSOR_PREFIX.length),
+    ) as Partial<PluginCatalogCursorState>;
+    return {
+      codePlugins: normalize(parsed.codePlugins),
+      bundlePlugins: normalize(parsed.bundlePlugins),
+    };
+  } catch {
+    return {
+      codePlugins: defaultCatalogSourceCursorState(),
+      bundlePlugins: defaultCatalogSourceCursorState(),
+    };
+  }
+}
+
 function initCatalogSource(state: CatalogSourceCursorState): CatalogSourceState {
   return {
     state: { ...state },
@@ -324,7 +366,7 @@ function finalizeCatalogSource(source: CatalogSourceState): CatalogSourceCursorS
       cursor: source.pageCursor,
       offset: source.index,
       pageSize: source.state.pageSize,
-      done: source.page.isDone,
+      done: false,
     };
   }
   return {
@@ -504,7 +546,7 @@ async function listPackages(
   ctx: ActionCtx,
   request: Request,
   family?: PackageListQueryArgs["family"],
-  options?: { includeSkills?: boolean },
+  options?: { includeSkills?: boolean; pluginFamilies?: Array<"code-plugin" | "bundle-plugin"> },
 ) {
   const rate = await applyRateLimit(ctx, request, "read");
   if (!rate.ok) return rate.response;
@@ -631,6 +673,84 @@ async function listPackages(
     );
   }
 
+  if (!effectiveFamily && options?.pluginFamilies?.length) {
+    const decodedCursor = decodePluginCatalogCursor(cursor);
+    const codePluginSource = initCatalogSource(decodedCursor.codePlugins);
+    const bundlePluginSource = initCatalogSource(decodedCursor.bundlePlugins);
+    const pageSize = limit;
+    const items: CatalogListItem[] = [];
+    const fetchPluginPage = async (
+      pluginFamily: "code-plugin" | "bundle-plugin",
+      pageCursor: string | null,
+      numItems: number,
+    ) => {
+      const result = await runQueryRef<{
+        page: CatalogListItem[];
+        isDone: boolean;
+        continueCursor: string | null;
+      }>(ctx, internalRefs.packages.listPageForViewerInternal, {
+        family: pluginFamily,
+        channel,
+        isOfficial,
+        executesCode,
+        capabilityTag,
+        viewerUserId: viewerUserId ?? undefined,
+        paginationOpts: { cursor: pageCursor, numItems },
+      });
+      return {
+        page: result.page,
+        isDone: result.isDone,
+        continueCursor: result.continueCursor ?? "",
+      };
+    };
+
+    while (items.length < limit) {
+      const [codePluginCandidate, bundlePluginCandidate] = await Promise.all([
+        options.pluginFamilies.includes("code-plugin")
+          ? ensureCatalogSourcePage(codePluginSource, pageSize, (pageCursor, numItems) =>
+              fetchPluginPage("code-plugin", pageCursor, numItems),
+            )
+          : Promise.resolve(null),
+        options.pluginFamilies.includes("bundle-plugin")
+          ? ensureCatalogSourcePage(bundlePluginSource, pageSize, (pageCursor, numItems) =>
+              fetchPluginPage("bundle-plugin", pageCursor, numItems),
+            )
+          : Promise.resolve(null),
+      ]);
+
+      if (!codePluginCandidate && !bundlePluginCandidate) break;
+      if (
+        !bundlePluginCandidate ||
+        (codePluginCandidate &&
+          compareCatalogItems(codePluginCandidate, bundlePluginCandidate) <= 0)
+      ) {
+        items.push(codePluginCandidate!);
+        codePluginSource.index += 1;
+      } else {
+        items.push(bundlePluginCandidate);
+        bundlePluginSource.index += 1;
+      }
+    }
+
+    const nextState = {
+      codePlugins: finalizeCatalogSource(codePluginSource),
+      bundlePlugins: finalizeCatalogSource(bundlePluginSource),
+    };
+    const isDoneAll =
+      nextState.codePlugins.done &&
+      nextState.codePlugins.offset === 0 &&
+      nextState.bundlePlugins.done &&
+      nextState.bundlePlugins.offset === 0;
+    return json(
+      {
+        items,
+        nextCursor: isDoneAll ? null : encodePluginCatalogCursor(nextState),
+      },
+      200,
+      rate.headers,
+    );
+  }
+
   const result = await runQueryRef<{
     page: unknown[];
     isDone: boolean;
@@ -656,7 +776,10 @@ export async function listPackagesV1Handler(ctx: ActionCtx, request: Request) {
 }
 
 export async function listPluginsV1Handler(ctx: ActionCtx, request: Request) {
-  return await listPackages(ctx, request, undefined, { includeSkills: false });
+  return await listPackages(ctx, request, undefined, {
+    includeSkills: false,
+    pluginFamilies: ["code-plugin", "bundle-plugin"],
+  });
 }
 
 export async function listCodePluginsV1Handler(ctx: ActionCtx, request: Request) {
@@ -1028,7 +1151,7 @@ async function getSkillVersionForRequest(
 async function searchPackages(
   ctx: ActionCtx,
   request: Request,
-  options?: { includeSkills?: boolean },
+  options?: { includeSkills?: boolean; pluginFamilies?: Array<"code-plugin" | "bundle-plugin"> },
 ) {
   const rate = await applyRateLimit(ctx, request, "read");
   if (!rate.ok) return rate.response;
@@ -1071,20 +1194,53 @@ async function searchPackages(
       },
     );
   } else if (family || !includeSkills) {
-    results = await runQueryRef<CatalogSearchEntry[]>(
-      ctx,
-      internalRefs.packages.searchForViewerInternal,
-      {
-        query: queryText,
-        limit,
-        family,
-        channel,
-        isOfficial,
-        executesCode,
-        capabilityTag,
-        viewerUserId: viewerUserId ?? undefined,
-      },
-    );
+    if (!family && options?.pluginFamilies?.length) {
+      const pluginResults = await Promise.all(
+        options.pluginFamilies.map((pluginFamily) =>
+          runQueryRef<CatalogSearchEntry[]>(ctx, internalRefs.packages.searchForViewerInternal, {
+            query: queryText,
+            limit,
+            family: pluginFamily,
+            channel,
+            isOfficial,
+            executesCode,
+            capabilityTag,
+            viewerUserId: viewerUserId ?? undefined,
+          }),
+        ),
+      );
+      const seen = new Set<string>();
+      results = pluginResults
+        .flat()
+        .filter((entry) => {
+          const key = `${entry.package.family}:${entry.package.name}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .sort(
+          (a, b) =>
+            b.score - a.score ||
+            Number(b.package.isOfficial) - Number(a.package.isOfficial) ||
+            compareCatalogItems(a.package, b.package),
+        )
+        .slice(0, limit);
+    } else {
+      results = await runQueryRef<CatalogSearchEntry[]>(
+        ctx,
+        internalRefs.packages.searchForViewerInternal,
+        {
+          query: queryText,
+          limit,
+          family,
+          channel,
+          isOfficial,
+          executesCode,
+          capabilityTag,
+          viewerUserId: viewerUserId ?? undefined,
+        },
+      );
+    }
   } else {
     const [packageResults, skillResults] = await Promise.all([
       runQueryRef<CatalogSearchEntry[]>(ctx, internalRefs.packages.searchForViewerInternal, {
@@ -1428,7 +1584,10 @@ export async function pluginsGetRouterV1Handler(ctx: ActionCtx, request: Request
   const segments = getPathSegments(request, "/api/v1/plugins/");
   if (segments.length === 0) return text("Not found", 404);
   if (segments[0] === "search" && new URL(request.url).searchParams.has("q")) {
-    return await searchPackages(ctx, request, { includeSkills: false });
+    return await searchPackages(ctx, request, {
+      includeSkills: false,
+      pluginFamilies: ["code-plugin", "bundle-plugin"],
+    });
   }
   return text("Not found", 404);
 }
