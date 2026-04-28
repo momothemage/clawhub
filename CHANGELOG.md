@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Docs: clarify that ClawHub does not support paid skills, per-skill pricing, or paywalled releases (#1752, #1844) (thanks @deepujain).
 - API docs: clarify how third-party directories can reuse public ClawHub catalog endpoints while respecting rate limits and canonical links (#1825, #1845) (thanks @deepujain).
 - Packages docs: document the required fields for code-plugin package publish flows (#1802) (thanks @deepujain).
 - Search: add CJK tokenization support (Chinese/Japanese/Korean) with Intl.Segmenter plus fallback behavior to improve skill query matching (#1596) (thanks @pq-dong).
