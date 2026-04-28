@@ -956,36 +956,11 @@ describe("packages public queries", () => {
     expect(result.page.map((entry) => entry.name)).toEqual(["official-demo"]);
   });
 
-  it("keeps scanning official-only listings without a family filter", async () => {
-    const { ctx } = makeDigestCtx({
+  it("uses the official index for official-only listings without a family filter", async () => {
+    const { ctx, indexNames, paginate } = makeDigestCtx({
       pages: [
         {
-          page: [makeDigest("noise-1", { isOfficial: false })],
-          isDone: false,
-          continueCursor: "cursor:1",
-        },
-        {
-          page: [makeDigest("noise-2", { isOfficial: false })],
-          isDone: false,
-          continueCursor: "cursor:2",
-        },
-        {
-          page: [makeDigest("noise-3", { isOfficial: false })],
-          isDone: false,
-          continueCursor: "cursor:3",
-        },
-        {
-          page: [makeDigest("noise-4", { isOfficial: false })],
-          isDone: false,
-          continueCursor: "cursor:4",
-        },
-        {
-          page: [makeDigest("noise-5", { isOfficial: false })],
-          isDone: false,
-          continueCursor: "cursor:5",
-        },
-        {
-          page: [makeDigest("official-late", { isOfficial: true, updatedAt: 10 })],
+          page: [makeDigest("official-late", { isOfficial: true })],
           isDone: true,
           continueCursor: "",
         },
@@ -998,6 +973,8 @@ describe("packages public queries", () => {
     });
 
     expect(result.page.map((entry) => entry.name)).toEqual(["official-late"]);
+    expect(indexNames).toEqual(["by_active_official_updated"]);
+    expect(paginate).toHaveBeenCalledTimes(1);
   });
 
   it("filters private packages and capability flags in public search", async () => {
@@ -1375,7 +1352,7 @@ describe("packages public queries", () => {
     expect(ctx.db.query).not.toHaveBeenCalledWith("publisherMembers");
   });
 
-  it("caps public list scans below the Convex read limit budget", async () => {
+  it("keeps public list pages to one paginated query per invocation", async () => {
     const { ctx, paginate } = makeDigestCtx({
       pages: Array.from({ length: 120 }, (_, index) => ({
         page: [makeDigest(`noise-${index}`, { executesCode: false })],
@@ -1390,7 +1367,10 @@ describe("packages public queries", () => {
     });
 
     expect(result.page).toEqual([]);
-    expect(paginate).toHaveBeenCalledTimes(100);
+    expect(result.isDone).toBe(false);
+    expect(result.continueCursor).toBeTruthy();
+    expect(paginate).toHaveBeenCalledTimes(1);
+    expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 100 });
   });
 
   it("caps public search scans below the Convex read limit budget", async () => {

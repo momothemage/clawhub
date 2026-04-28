@@ -44,8 +44,7 @@ import { tokenize } from "./lib/searchText";
 import { hashSkillFiles } from "./lib/skills";
 import { runStaticPublishScan } from "./lib/staticPublishScan";
 
-const MAX_PACKAGE_SCAN_DOCUMENTS = 30_000;
-const MAX_PUBLIC_LIST_SCAN_PAGES = 100;
+const MAX_PUBLIC_LIST_PAGE_SIZE = 200;
 const MAX_SEARCH_PAGE_SIZE = 200;
 const MAX_SEARCH_SCAN_DOCUMENTS = 1_000;
 const MAX_SEARCH_SCAN_PAGES = 20;
@@ -1164,88 +1163,84 @@ async function listPackagePageImpl(
   const targetCount = args.paginationOpts.numItems;
   const collected: PublicPackageListItem[] = [];
   const decodedCursor = decodePublicPageCursor(args.paginationOpts.cursor);
-  let cursor = decodedCursor.cursor;
-  let offset = decodedCursor.offset;
-  let pageSize = decodedCursor.pageSize;
-  let done = decodedCursor.done;
-  let loops = 0;
-  let remainingScanBudget = MAX_PACKAGE_SCAN_DOCUMENTS;
+  if (decodedCursor.done && decodedCursor.offset === 0) {
+    return { page: collected, isDone: true, continueCursor: "" };
+  }
+  const pageCursor = decodedCursor.cursor;
+  const offset = decodedCursor.offset;
+  const effectivePageSize = Math.min(
+    MAX_PUBLIC_LIST_PAGE_SIZE,
+    Math.max(
+      targetCount,
+      decodedCursor.pageSize ?? 0,
+      offset > 0 ? offset + targetCount : targetCount,
+    ),
+  );
   const family = args.family;
   const channel = args.channel;
   const isOfficial = args.isOfficial;
 
-  while (
-    (offset > 0 || !done) &&
-    collected.length < targetCount &&
-    loops < MAX_PUBLIC_LIST_SCAN_PAGES &&
-    remainingScanBudget > 0
-  ) {
-    loops += 1;
-    const effectivePageSize = Math.min(
-      remainingScanBudget,
-      offset > 0 ? Math.max(offset + 1, targetCount) : targetCount,
-    );
-    if (effectivePageSize <= 0) break;
-    remainingScanBudget -= effectivePageSize;
-    const pageCursor = cursor;
-    const builder = args.capabilityTag
-      ? buildPackageCapabilityDigestQuery(ctx, {
-          capabilityTag: args.capabilityTag,
-          family,
-          channel,
-          isOfficial,
-          executesCode: args.executesCode,
-        })
-      : buildPackageDigestQuery(ctx, {
-          family,
-          channel,
-          isOfficial,
-          executesCode: args.executesCode,
-        });
-    const page: {
-      page: PackageDigestLike[];
-      isDone: boolean;
-      continueCursor: string;
-    } = await builder.order("desc").paginate({ cursor: pageCursor, numItems: effectivePageSize });
-    for (let index = offset; index < page.page.length; index += 1) {
-      const digest = page.page[index] as PackageDigestLike;
-      if (!(await canViewPackage(digest))) continue;
-      if (channel && digest.channel !== channel) continue;
-      if (typeof isOfficial === "boolean" && digest.isOfficial !== isOfficial) {
-        continue;
-      }
-      if (!digestMatchesFilters(digest, args)) continue;
-      collected.push(toPublicPackageListItem(digest));
-      if (collected.length >= targetCount) {
-        const nextOffset = index + 1;
-        if (nextOffset < page.page.length) {
-          cursor = pageCursor;
-          offset = nextOffset;
-          pageSize = effectivePageSize;
-          done = page.isDone;
-        } else {
-          cursor = page.continueCursor;
-          offset = 0;
-          pageSize = effectivePageSize;
-          done = page.isDone;
-        }
-        return {
-          page: collected,
-          isDone: done && offset === 0,
-          continueCursor: encodePublicPageCursor({ cursor, offset, pageSize, done }),
-        };
-      }
+  const builder = args.capabilityTag
+    ? buildPackageCapabilityDigestQuery(ctx, {
+        capabilityTag: args.capabilityTag,
+        family,
+        channel,
+        isOfficial,
+        executesCode: args.executesCode,
+      })
+    : buildPackageDigestQuery(ctx, {
+        family,
+        channel,
+        isOfficial,
+        executesCode: args.executesCode,
+      });
+  const page: {
+    page: PackageDigestLike[];
+    isDone: boolean;
+    continueCursor: string;
+  } = await builder.order("desc").paginate({ cursor: pageCursor, numItems: effectivePageSize });
+  for (let index = offset; index < page.page.length; index += 1) {
+    const digest = page.page[index] as PackageDigestLike;
+    if (!(await canViewPackage(digest))) continue;
+    if (channel && digest.channel !== channel) continue;
+    if (typeof isOfficial === "boolean" && digest.isOfficial !== isOfficial) {
+      continue;
     }
-    done = page.isDone;
-    cursor = page.continueCursor;
-    offset = 0;
-    pageSize = effectivePageSize;
+    if (!digestMatchesFilters(digest, args)) continue;
+    collected.push(toPublicPackageListItem(digest));
+    if (collected.length >= targetCount) {
+      const nextOffset = index + 1;
+      const nextState =
+        nextOffset < page.page.length
+          ? {
+              cursor: pageCursor,
+              offset: nextOffset,
+              pageSize: effectivePageSize,
+              done: page.isDone,
+            }
+          : {
+              cursor: page.continueCursor,
+              offset: 0,
+              pageSize: effectivePageSize,
+              done: page.isDone,
+            };
+      return {
+        page: collected,
+        isDone: nextState.done && nextState.offset === 0,
+        continueCursor: encodePublicPageCursor(nextState),
+      };
+    }
   }
 
   return {
     page: collected,
-    isDone: done,
-    continueCursor: encodePublicPageCursor({ cursor, offset, pageSize, done }),
+    isDone: page.isDone,
+    continueCursor: encodePublicPageCursor({
+      cursor: page.continueCursor,
+      offset: 0,
+      pageSize: effectivePageSize,
+      done: page.isDone,
+    }),
   };
 }
 
