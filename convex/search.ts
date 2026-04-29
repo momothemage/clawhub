@@ -12,6 +12,7 @@ import { matchesExactTokens, tokenize } from "./lib/searchText";
 import { SKILL_CAPABILITY_TAGS } from "./lib/skillCapabilityTags";
 import { isSkillSuspicious } from "./lib/skillSafety";
 import { digestToHydratableSkill, digestToOwnerInfo } from "./lib/skillSearchDigest";
+import { isValidSkillSlugShape, normalizeSkillSlug } from "./lib/skillSlugValidator";
 
 type OwnerInfo = { ownerHandle: string | null; owner: PublicPublisher | null };
 
@@ -123,7 +124,9 @@ function mergeUniqueBySkillId(primary: SkillSearchEntry[], fallback: SkillSearch
 }
 
 function isSlugLikeQuery(query: string) {
-  return /^[a-z0-9][a-z0-9-]*$/.test(query.trim().toLowerCase());
+  // Shape-only check (length + pattern). Reserved-word blocklist is ignored
+  // on purpose so legacy rows carrying reserved slugs remain searchable.
+  return isValidSkillSlugShape(query);
 }
 
 function matchesCapabilityTag(
@@ -371,8 +374,8 @@ export const lexicalFallbackSkills = internalQuery({
     >();
 
     // Exact slug match via the skills table (only one row, cheap).
-    const slugQuery = args.query.trim().toLowerCase();
-    if (!args.skipExactSlugLookup && /^[a-z0-9][a-z0-9-]*$/.test(slugQuery)) {
+    const slugQuery = normalizeSkillSlug(args.query);
+    if (!args.skipExactSlugLookup && isValidSkillSlugShape(slugQuery)) {
       const exactSlugSkill = await ctx.db
         .query("skills")
         .withIndex("by_slug", (q) => q.eq("slug", slugQuery))
