@@ -12,7 +12,7 @@ import { matchesExactTokens, tokenize } from "./lib/searchText";
 import { SKILL_CAPABILITY_TAGS } from "./lib/skillCapabilityTags";
 import { isSkillSuspicious } from "./lib/skillSafety";
 import { digestToHydratableSkill, digestToOwnerInfo } from "./lib/skillSearchDigest";
-import { isValidSkillSlugShape, normalizeSkillSlug } from "./lib/skillSlugValidator";
+import { isSearchableSkillSlugShape, normalizeSkillSlug } from "./lib/skillSlugValidator";
 
 type OwnerInfo = { ownerHandle: string | null; owner: PublicPublisher | null };
 
@@ -124,9 +124,11 @@ function mergeUniqueBySkillId(primary: SkillSearchEntry[], fallback: SkillSearch
 }
 
 function isSlugLikeQuery(query: string) {
-  // Shape-only check (length + pattern). Reserved-word blocklist is ignored
-  // on purpose so legacy rows carrying reserved slugs remain searchable.
-  return isValidSkillSlugShape(query);
+  // Lenient shape check used by the read path: pattern + upper length cap only.
+  // The min-length floor and reserved-word blocklist are intentionally omitted
+  // so legacy rows (grandfathered short/reserved slugs) remain discoverable via
+  // the exact-slug fast path. Write paths still go through assertValidSkillSlug.
+  return isSearchableSkillSlugShape(query);
 }
 
 function matchesCapabilityTag(
@@ -373,8 +375,11 @@ export const lexicalFallbackSkills = internalQuery({
     >();
 
     // Exact slug match via the skills table (only one row, cheap).
+    // Use the lenient shape predicate so legacy rows with sub-min-length
+    // slugs stay discoverable; the caller in searchSkills already passes
+    // skipExactSlugLookup=true after running its own exact-slug lookup.
     const slugQuery = normalizeSkillSlug(args.query);
-    if (!args.skipExactSlugLookup && isValidSkillSlugShape(slugQuery)) {
+    if (!args.skipExactSlugLookup && isSearchableSkillSlugShape(slugQuery)) {
       const exactSlugSkill = await ctx.db
         .query("skills")
         .withIndex("by_slug", (q) => q.eq("slug", slugQuery))
