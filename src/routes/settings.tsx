@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
 import {
   Eye,
@@ -9,6 +9,7 @@ import {
   Moon,
   RotateCcw,
   Settings2,
+  Star,
   Sun,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -254,6 +255,21 @@ export function Settings() {
                 <div className="text-sm text-[color:var(--ink-soft)]">{me.email}</div>
               ) : null}
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Star size={18} />
+              Stars
+            </CardTitle>
+            <CardDescription>Review skills you&apos;ve starred for quick access.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button asChild variant="outline">
+              <Link to="/stars">View stars</Link>
+            </Button>
           </CardContent>
         </Card>
 
