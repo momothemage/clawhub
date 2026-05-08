@@ -81,6 +81,7 @@ function createMigrationFixture(params: {
    *    authority on `publishers:sourceOrg` is parameterized via `sourceMemberships`.
    */
   skillSource?: SkillSourceMode;
+  sourcePersonalLinkedUserId?: string | null;
 }): OrgMigrationFixture {
   const now = Date.now();
   const patchCalls: Array<{ id: string; value: Record<string, unknown> }> = [];
@@ -105,7 +106,10 @@ function createMigrationFixture(params: {
           kind: "user",
           handle: "caller",
           displayName: "caller",
-          linkedUserId: "users:caller",
+          linkedUserId:
+            params.sourcePersonalLinkedUserId === undefined
+              ? "users:caller"
+              : params.sourcePersonalLinkedUserId,
           deletedAt: undefined,
           deactivatedAt: undefined,
         };
@@ -247,6 +251,16 @@ function createMigrationFixture(params: {
                   softDeletedAt: undefined,
                   moderationStatus: "active",
                   moderationFlags: undefined,
+                  statsDownloads: 42,
+                  statsStars: 7,
+                  stats: {
+                    downloads: 1,
+                    stars: 2,
+                    installsCurrent: 0,
+                    installsAllTime: 0,
+                    comments: 0,
+                    versions: 1,
+                  },
                 }),
               };
             }
@@ -442,9 +456,17 @@ describe("skills.insertVersion owner migration", () => {
     // moderator `changeOwner` path performs via
     // `adjustUserSkillStatsForSkillChange`.
     const prevOwnerStatsPatch = fixture.patchCalls.find((p) => p.id === "users:sourceOwner");
-    expect(prevOwnerStatsPatch?.value).toMatchObject({ publishedSkills: 0 });
+    expect(prevOwnerStatsPatch?.value).toMatchObject({
+      publishedSkills: 0,
+      totalStars: 0,
+      totalDownloads: 0,
+    });
     const nextOwnerStatsPatch = fixture.patchCalls.find((p) => p.id === "users:caller");
-    expect(nextOwnerStatsPatch?.value).toMatchObject({ publishedSkills: 1 });
+    expect(nextOwnerStatsPatch?.value).toMatchObject({
+      publishedSkills: 1,
+      totalStars: 7,
+      totalDownloads: 42,
+    });
 
     // And the skill's embedding must be re-homed to the new owner so that
     // "authored by" queries don't keep resolving to the previous owner.
@@ -511,6 +533,35 @@ describe("skills.insertVersion owner migration", () => {
     // the embedding reassignment loop and avoids a no-op patch storm.
     const embeddingPatches = fixture.patchCalls.filter((p) => p.id === "skillEmbeddings:1");
     expect(embeddingPatches).toHaveLength(0);
+  });
+
+  it("migrates caller-owned personal skills even when the legacy personal publisher link is missing", async () => {
+    const fixture = createMigrationFixture({
+      skillSource: "caller-personal",
+      sourcePersonalLinkedUserId: null,
+      sourceMemberships: [
+        {
+          _id: "publisherMembers:orgAdminCaller",
+          publisherId: "publishers:org",
+          userId: "users:caller",
+          role: "admin",
+        },
+      ],
+    });
+
+    await expect(
+      insertVersionHandler(
+        { db: fixture.db } as never,
+        buildPublishArgs({ migrateOwner: true }) as never,
+      ),
+    ).rejects.toThrow(SENTINEL_BAIL_MESSAGE);
+
+    const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
+    expect(skillPatches).toHaveLength(1);
+    expect(skillPatches[0]?.value).toMatchObject({
+      ownerPublisherId: "publishers:org",
+      ownerUserId: "users:caller",
+    });
   });
 
   it("refuses to migrate a skill out of SOMEONE ELSE'S personal publisher even if caller happens to be a member", async () => {

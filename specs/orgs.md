@@ -240,14 +240,21 @@ Moderators/admins keep global override powers as they do today.
 
 ### Skills
 
-Skill publishing currently assumes the actor is the owner.
-
-Target behavior:
+Skill publishing is publisher-aware for normal publishes and explicit owner
+migration.
 
 - actor selects publisher in UI/CLI
 - publish mutation validates publisher membership
 - resource stores `ownerPublisherId`
 - version keeps `createdBy`
+- if the selected publisher differs from the existing skill owner, the request
+  must include `migrateOwner: true`
+- owner migration requires admin or owner access on both the current publisher
+  and the destination publisher
+- migration preserves the skill id, versions, stats, comments, forks, aliases,
+  search digest identity, and audit history
+- migration writes a `skill.ownership.migrate` audit event; the new version's
+  `createdBy` remains the publishing actor
 
 ### Packages
 
@@ -315,6 +322,7 @@ Suggested fields:
 Publish payloads should take:
 
 - `ownerHandle`
+- `migrateOwner`
 
 Semantics:
 
@@ -322,6 +330,7 @@ Semantics:
 - validate membership
 - reject unknown publishers
 - reject insufficient role
+- reject owner changes unless `migrateOwner === true`
 
 ## Transfer Model
 

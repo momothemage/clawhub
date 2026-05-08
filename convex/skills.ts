@@ -7761,10 +7761,13 @@ export const insertVersion = internalMutation({
       // user-kind publisher unless the caller IS its linkedUser, so the only
       // way to move a personal skill is "the owner themselves decides to move
       // it" — never "a third party who happens to share a publisher row".
+      // Legacy personal publisher rows may be missing `linkedUserId`, so the
+      // persisted skill owner is accepted as the compatibility fallback.
       const callerRequestedMigration = args.migrateOwner === true;
       const sourcePublisher = await ctx.db.get(skill.ownerPublisherId);
       const callerOwnsSourceViaPersonalLink =
-        sourcePublisher?.kind === "user" && sourcePublisher.linkedUserId === userId;
+        sourcePublisher?.kind === "user" &&
+        (sourcePublisher.linkedUserId === userId || skill.ownerUserId === userId);
       const sourceIsOrg = sourcePublisher?.kind === "org";
 
       const sourceMembership =

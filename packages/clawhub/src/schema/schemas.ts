@@ -81,6 +81,7 @@ export const CliPublishRequestSchema = type({
   slug: "string",
   displayName: "string",
   ownerHandle: "string?",
+  migrateOwner: "boolean?",
   version: "string",
   changelog: "string",
   acceptLicenseTerms: "boolean?",

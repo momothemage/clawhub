@@ -2416,6 +2416,7 @@ describe("httpApiV1 handlers", () => {
       slug: "demo",
       displayName: "Demo",
       ownerHandle: "@openclaw",
+      migrateOwner: true,
       version: "1.0.0",
       changelog: "c",
       acceptLicenseTerms: true,
@@ -2450,7 +2451,7 @@ describe("httpApiV1 handlers", () => {
       expect.anything(),
       "users:1",
       expect.not.objectContaining({ ownerHandle: expect.anything() }),
-      { ownerPublisherId: "publishers:openclaw" },
+      { ownerPublisherId: "publishers:openclaw", migrateOwner: true },
     );
   });
 
@@ -2586,6 +2587,7 @@ describe("httpApiV1 handlers", () => {
         slug: "demo",
         displayName: "Demo",
         ownerHandle: "@openclaw",
+        migrateOwner: true,
         version: "1.0.0",
         changelog: "",
         acceptLicenseTerms: true,
@@ -2606,7 +2608,7 @@ describe("httpApiV1 handlers", () => {
       expect.anything(),
       "users:1",
       expect.not.objectContaining({ ownerHandle: expect.anything() }),
-      { ownerPublisherId: "publishers:openclaw" },
+      { ownerPublisherId: "publishers:openclaw", migrateOwner: true },
     );
   });
 

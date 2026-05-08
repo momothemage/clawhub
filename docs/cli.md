@@ -154,6 +154,8 @@ Stores your API token + cached registry URL.
 - Requires semver: `--version 1.2.3`.
 - `--owner <handle>` publishes under an org/user publisher handle when the
   actor has publisher access.
+- `--migrate-owner` moves an existing skill to `--owner` while publishing a new
+  version. Requires admin/owner access on both publishers.
 - Owner and review behavior is explained in `docs/publishing.md`.
 - Publishing a skill means it is released under `MIT-0` on ClawHub.
 - Published skills are free to use, modify, and redistribute without attribution.

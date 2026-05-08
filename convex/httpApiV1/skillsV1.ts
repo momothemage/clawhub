@@ -1038,7 +1038,7 @@ async function publishSkillPayloadForApiUser(
   userId: Id<"users">,
   payload: ReturnType<typeof parsePublishBody>,
 ) {
-  const { ownerHandle, ...publishPayload } = payload;
+  const { ownerHandle, migrateOwner, ...publishPayload } = payload;
   if (!ownerHandle) {
     return await publishVersionForUser(ctx, userId, publishPayload);
   }
@@ -1049,6 +1049,7 @@ async function publishSkillPayloadForApiUser(
   })) as { publisherId: Id<"publishers"> };
   return await publishVersionForUser(ctx, userId, publishPayload, {
     ownerPublisherId: target.publisherId,
+    migrateOwner: migrateOwner === true ? true : undefined,
   });
 }
 

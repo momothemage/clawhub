@@ -357,7 +357,14 @@ export async function publishVersionForUser(
     versionId: publishResult.versionId,
   });
 
-  const ownerHandle = owner?.handle ?? owner?.displayName ?? owner?.name ?? "unknown";
+  const targetPublisher =
+    options.ownerPublisherId !== undefined
+      ? ((await ctx.runQuery(internal.publishers.getByIdInternal, {
+          publisherId: options.ownerPublisherId,
+        })) as Doc<"publishers"> | null)
+      : null;
+  const ownerHandle =
+    targetPublisher?.handle ?? owner?.handle ?? owner?.displayName ?? owner?.name ?? "unknown";
 
   if (!options.skipBackup) {
     void ctx.scheduler

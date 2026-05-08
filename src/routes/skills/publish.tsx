@@ -300,6 +300,7 @@ export function Upload() {
     ownerHandle &&
     ownerHandle !== existingOwnerHandle,
   );
+  const effectiveSlugCollision = isOwnerMigration && confirmMigrateOwner ? null : slugCollision;
   const parsedTags = useMemo(
     () =>
       tags
@@ -353,8 +354,8 @@ export function Upload() {
     if (totalBytes > MAX_PUBLISH_TOTAL_BYTES) {
       issues.push("Total file size exceeds 50MB.");
     }
-    if (slugCollision) {
-      issues.push(slugCollision.message);
+    if (effectiveSlugCollision) {
+      issues.push(effectiveSlugCollision.message);
     }
     return {
       issues,
@@ -373,7 +374,7 @@ export function Upload() {
     oversizedFiles.length,
     oversizedFileNames,
     requiredFileLabel,
-    slugCollision,
+    effectiveSlugCollision,
     isOwnerMigration,
     confirmMigrateOwner,
     existingOwnerHandle,
@@ -413,9 +414,9 @@ export function Upload() {
       }
       return;
     }
-    if (slugCollision) {
-      setError(slugCollision.message);
-      toast.error(slugCollision.message);
+    if (effectiveSlugCollision) {
+      setError(effectiveSlugCollision.message);
+      toast.error(effectiveSlugCollision.message);
       return;
     }
     if (!isSoulMode && !acceptedLicenseTerms) {
@@ -700,14 +701,14 @@ export function Upload() {
                   ))}
                 </ul>
               )}
-              {slugCollision?.url ? (
+              {effectiveSlugCollision?.url ? (
                 <div className="text-sm text-[color:var(--ink-soft)]">
                   Existing skill:{" "}
                   <a
-                    href={slugCollision.url}
+                    href={effectiveSlugCollision.url}
                     className="text-[color:var(--accent)] hover:underline"
                   >
-                    {slugCollision.url}
+                    {effectiveSlugCollision.url}
                   </a>
                 </div>
               ) : null}

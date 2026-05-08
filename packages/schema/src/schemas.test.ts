@@ -69,6 +69,7 @@ describe("clawhub-schema", () => {
         slug: "demo",
         displayName: "Demo",
         ownerHandle: "openclaw",
+        migrateOwner: true,
         version: "1.0.0",
         changelog: "",
         files: [{ path: "SKILL.md", size: 1, storageId: "s", sha256: "x" }],
@@ -76,6 +77,7 @@ describe("clawhub-schema", () => {
       "Publish payload",
     );
     expect(payload.ownerHandle).toBe("openclaw");
+    expect(payload.migrateOwner).toBe(true);
   });
 
   it("reports scoped package names that do not match the selected owner", () => {
