@@ -141,7 +141,7 @@ function createMigrationFixture(params: {
     query: vi.fn((table: string) => {
       if (table === "publishers") {
         return {
-          withIndex: (name: string, build: (q: unknown) => unknown) => {
+          withIndex: (_name: string, build: (q: unknown) => unknown) => {
             // Handle any publisher-handle lookup by returning the caller/source/org
             // as inert (not present) to keep ensurePersonalPublisherForUser happy.
             const q: Record<string, unknown> = {
