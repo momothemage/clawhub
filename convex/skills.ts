@@ -74,6 +74,8 @@ import {
   assertCanManageOwnedResource,
   ensurePersonalPublisherForUser,
   getOwnerPublisher,
+  getPublisherMembership,
+  isPublisherRoleAllowed,
   requirePublisherRole,
 } from "./lib/publishers";
 import {
@@ -7663,6 +7665,15 @@ export const insertVersion = internalMutation({
     if (!user || user.deletedAt || user.deactivatedAt) throw new Error("User not found");
     const personalPublisher = await ensurePersonalPublisherForUser(ctx, user);
     if (!personalPublisher) throw new ConvexError("Personal publisher not found");
+    // `callerExplicitlySpecifiedOwner` distinguishes the two semantically
+    // different reasons we end up with `ownerPublisherId === personalPublisher._id`:
+    //   1. the caller explicitly asked to publish under their own personal
+    //      publisher (we still allow migration in that case — moving from an
+    //      org back to personal is symmetric to the org-migration flow), or
+    //   2. the caller simply didn't pass the field (e.g. older CLI builds).
+    // We only treat case (2) as "no migration intent", so that a silent client
+    // upgrade can never re-own an org-owned skill into a personal namespace.
+    const callerExplicitlySpecifiedOwner = args.ownerPublisherId !== undefined;
     const ownerPublisherId = args.ownerPublisherId ?? personalPublisher._id;
     if (ownerPublisherId !== personalPublisher._id) {
       await requirePublisherRole(ctx, {
@@ -7703,11 +7714,88 @@ export const insertVersion = internalMutation({
     }
 
     if (skill && skill.ownerPublisherId && skill.ownerPublisherId !== ownerPublisherId) {
-      const owner = await getOwnerPublisher(ctx, {
-        ownerPublisherId: skill.ownerPublisherId,
-        ownerUserId: skill.ownerUserId,
+      // Owner migration: allow publishing under a different publisher (e.g. moving
+      // a skill from a personal publisher into an org, or between orgs) when the
+      // caller has publisher-level rights on BOTH the current owner publisher and
+      // the target publisher. The target-side check already happened above (via
+      // `requirePublisherRole` when `ownerPublisherId !== personalPublisher._id`).
+      // Here we additionally require caller to be a publisher of the source, which
+      // keeps the existing anti-squatting guarantee: a stranger cannot hijack a
+      // slug just because they happen to be a member of some other publisher.
+      //
+      // We also require the caller to have *explicitly* asked to publish under
+      // a specific publisher (`args.ownerPublisherId !== undefined`). Older
+      // clients that just call `publishVersion` without an owner param would
+      // otherwise accidentally migrate org-owned skills back into the caller's
+      // personal namespace on every publish.
+      // Defense in depth: `addMember` does not currently require publisher.kind ===
+      // "org", so in principle a user-kind ("personal") publisher can end up with
+      // extra members beyond its linkedUser. We refuse migration *out* of a
+      // user-kind publisher unless the caller IS its linkedUser, so the only
+      // way to move a personal skill is "the owner themselves decides to move
+      // it" — never "a third party who happens to share a publisher row".
+      const sourcePublisher = await ctx.db.get(skill.ownerPublisherId);
+      const sourceIsSafeToMigrateFrom =
+        sourcePublisher?.kind === "org" ||
+        (sourcePublisher?.kind === "user" && sourcePublisher.linkedUserId === userId);
+
+      const sourceMembership =
+        callerExplicitlySpecifiedOwner && sourceIsSafeToMigrateFrom
+          ? await getPublisherMembership(ctx, skill.ownerPublisherId, userId)
+          : null;
+      const callerCanPublishFromSource = Boolean(
+        sourceMembership && isPublisherRoleAllowed(sourceMembership.role, ["publisher"]),
+      );
+
+      if (!callerCanPublishFromSource) {
+        const owner = await getOwnerPublisher(ctx, {
+          ownerPublisherId: skill.ownerPublisherId,
+          ownerUserId: skill.ownerUserId,
+        });
+        throw new ConvexError(buildSlugTakenErrorMessage(skill, owner));
+      }
+
+      const previousOwnerPublisherId = skill.ownerPublisherId;
+      const previousOwnerUserId = skill.ownerUserId;
+
+      await ctx.db.patch(skill._id, {
+        ownerPublisherId,
+        ownerUserId: userId,
+        updatedAt: now,
       });
-      throw new ConvexError(buildSlugTakenErrorMessage(skill, owner));
+
+      // Keep existing slug aliases pointed at the new owner so old URLs still
+      // resolve correctly while the canonical page moves (the `$owner/$slug`
+      // loader already redirects to the canonical owner handle on read).
+      const aliases = await listSkillSlugAliasesForSkill(ctx, skill._id);
+      for (const alias of aliases) {
+        await ctx.db.patch(alias._id, {
+          ownerPublisherId,
+          ownerUserId: userId,
+          updatedAt: now,
+        });
+      }
+
+      await ctx.db.insert("auditLogs", {
+        actorUserId: userId,
+        action: "skill.ownership.migrate",
+        targetType: "skill",
+        targetId: skill._id,
+        metadata: {
+          reason: "publishVersion.ownerMigration",
+          from: {
+            ownerPublisherId: previousOwnerPublisherId,
+            ownerUserId: previousOwnerUserId,
+          },
+          to: {
+            ownerPublisherId,
+            ownerUserId: userId,
+          },
+        },
+        createdAt: now,
+      });
+
+      skill = { ...skill, ownerPublisherId, ownerUserId: userId };
     }
 
     if (skill && !skill.ownerPublisherId && skill.ownerUserId !== userId) {
