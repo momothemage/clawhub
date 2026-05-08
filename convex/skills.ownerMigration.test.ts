@@ -65,7 +65,7 @@ type OrgMigrationFixture = {
   insertCalls: Array<{ table: string; value: Record<string, unknown> }>;
 };
 
-type SkillSourceMode = "other-personal" | "caller-personal";
+type SkillSourceMode = "other-personal" | "caller-personal" | "source-org";
 
 function createMigrationFixture(params: {
   sourceMemberships: PublisherMemberRecord[];
@@ -76,6 +76,9 @@ function createMigrationFixture(params: {
    *  - "caller-personal": `publishers:personalCaller` (linkedUser = users:caller),
    *    used to simulate the real issue scenario: moving your own personal skill
    *    into an org you belong to.
+   *  - "source-org": `publishers:sourceOrg` (kind = "org"), used to simulate
+   *    moving a skill OUT of one org and into another publisher. The caller's
+   *    authority on `publishers:sourceOrg` is parameterized via `sourceMemberships`.
    */
   skillSource?: SkillSourceMode;
 }): OrgMigrationFixture {
@@ -132,6 +135,16 @@ function createMigrationFixture(params: {
           handle: "cbrunnkvist",
           displayName: "cbrunnkvist",
           linkedUserId: "users:sourceOwner",
+          deletedAt: undefined,
+          deactivatedAt: undefined,
+        };
+      }
+      if (id === "publishers:sourceOrg") {
+        return {
+          _id: "publishers:sourceOrg",
+          kind: "org",
+          handle: "sourceorg",
+          displayName: "Source Org",
           deletedAt: undefined,
           deactivatedAt: undefined,
         };
@@ -217,15 +230,19 @@ function createMigrationFixture(params: {
               };
               build?.(q);
               const mode: SkillSourceMode = params.skillSource ?? "other-personal";
+              const ownerPublisherId =
+                mode === "caller-personal"
+                  ? "publishers:personalCaller"
+                  : mode === "source-org"
+                    ? "publishers:sourceOrg"
+                    : "publishers:personalSource";
+              const ownerUserId = mode === "caller-personal" ? "users:caller" : "users:sourceOwner";
               return {
                 unique: async () => ({
                   _id: "skills:1",
                   slug: "nano",
-                  ownerUserId: mode === "caller-personal" ? "users:caller" : "users:sourceOwner",
-                  ownerPublisherId:
-                    mode === "caller-personal"
-                      ? "publishers:personalCaller"
-                      : "publishers:personalSource",
+                  ownerUserId,
+                  ownerPublisherId,
                   softDeletedAt: undefined,
                   moderationStatus: "active",
                   moderationFlags: undefined,
@@ -280,7 +297,7 @@ function createMigrationFixture(params: {
 }
 
 describe("skills.insertVersion owner migration", () => {
-  it("rejects slug migration when caller has no publisher role on the source publisher", async () => {
+  it("rejects slug migration when caller has no membership on the source publisher", async () => {
     const fixture = createMigrationFixture({ sourceMemberships: [] });
 
     await expect(
@@ -296,6 +313,81 @@ describe("skills.insertVersion owner migration", () => {
       (call) => call.table === "auditLogs" && call.value.action === "skill.ownership.migrate",
     );
     expect(migrationAudits).toHaveLength(0);
+  });
+
+  it("rejects slug migration when caller is only a 'publisher' (not admin/owner) on the source org", async () => {
+    // Regression guard for the privilege-escalation path: a plain publisher-role
+    // member of the source org must NOT be able to walk skills out of that org
+    // via a republish. Transferring ownership requires admin/owner-level
+    // authority on the source, aligned with `transferPackage` in packages.ts.
+    const fixture = createMigrationFixture({
+      skillSource: "source-org",
+      sourceMemberships: [
+        {
+          _id: "publisherMembers:sourcePublisher",
+          publisherId: "publishers:sourceOrg",
+          userId: "users:caller",
+          role: "publisher",
+        },
+      ],
+    });
+
+    await expect(
+      insertVersionHandler({ db: fixture.db } as never, buildPublishArgs() as never),
+    ).rejects.toThrow(/Slug is already taken/);
+
+    const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
+    expect(skillPatches).toHaveLength(0);
+
+    const migrationAudits = fixture.insertCalls.filter(
+      (call) => call.table === "auditLogs" && call.value.action === "skill.ownership.migrate",
+    );
+    expect(migrationAudits).toHaveLength(0);
+  });
+
+  it("migrates ownership when caller is an admin on the source org", async () => {
+    // Positive counterpart to the publisher-only rejection above: admin/owner
+    // authority on the source publisher IS sufficient to move the skill, which
+    // matches the transfer semantics in convex/packages.ts.
+    const fixture = createMigrationFixture({
+      skillSource: "source-org",
+      sourceMemberships: [
+        {
+          _id: "publisherMembers:sourceAdmin",
+          publisherId: "publishers:sourceOrg",
+          userId: "users:caller",
+          role: "admin",
+        },
+      ],
+    });
+
+    await expect(
+      insertVersionHandler({ db: fixture.db } as never, buildPublishArgs() as never),
+    ).rejects.toThrow(SENTINEL_BAIL_MESSAGE);
+
+    const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
+    expect(skillPatches).toHaveLength(1);
+    expect(skillPatches[0]?.value).toMatchObject({
+      ownerPublisherId: "publishers:org",
+      ownerUserId: "users:caller",
+    });
+
+    const migrationAudits = fixture.insertCalls.filter(
+      (call) => call.table === "auditLogs" && call.value.action === "skill.ownership.migrate",
+    );
+    expect(migrationAudits).toHaveLength(1);
+    const auditMetadata = migrationAudits[0]?.value.metadata as {
+      from?: { ownerPublisherId?: string; ownerUserId?: string };
+      to?: { ownerPublisherId?: string; ownerUserId?: string };
+    };
+    expect(auditMetadata.from).toEqual({
+      ownerPublisherId: "publishers:sourceOrg",
+      ownerUserId: "users:sourceOwner",
+    });
+    expect(auditMetadata.to).toEqual({
+      ownerPublisherId: "publishers:org",
+      ownerUserId: "users:caller",
+    });
   });
 
   it("migrates ownership when caller moves their OWN personal skill into an org they belong to", async () => {

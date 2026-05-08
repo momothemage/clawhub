@@ -7715,19 +7715,28 @@ export const insertVersion = internalMutation({
 
     if (skill && skill.ownerPublisherId && skill.ownerPublisherId !== ownerPublisherId) {
       // Owner migration: allow publishing under a different publisher (e.g. moving
-      // a skill from a personal publisher into an org, or between orgs) when the
-      // caller has publisher-level rights on BOTH the current owner publisher and
-      // the target publisher. The target-side check already happened above (via
-      // `requirePublisherRole` when `ownerPublisherId !== personalPublisher._id`).
-      // Here we additionally require caller to be a publisher of the source, which
-      // keeps the existing anti-squatting guarantee: a stranger cannot hijack a
-      // slug just because they happen to be a member of some other publisher.
+      // a skill from a personal publisher into an org, or between orgs) only when
+      // the caller has sufficient authority on BOTH sides.
+      //
+      // Authority model — aligned with `transferPackage` in convex/packages.ts:
+      //   * target (destination) side — publisher-level rights are sufficient, and
+      //     have already been enforced above by `requirePublisherRole(..., ["publisher"])`
+      //     when `ownerPublisherId !== personalPublisher._id`. We keep that bar:
+      //     this mutation is semantically a publish, not a transfer-grant, so the
+      //     destination side does not need admin.
+      //   * source side — must be ADMIN on the source publisher (or the linked
+      //     personal-publisher user themselves). This matches the transfer spec:
+      //     moving a skill *out* of an org is an ownership change, so a plain
+      //     "publisher" role member must not be able to trigger it by republishing.
+      //     Previously this only required source publisher-role, which let any
+      //     org member walk skills out of the org into their personal namespace.
       //
       // We also require the caller to have *explicitly* asked to publish under
       // a specific publisher (`args.ownerPublisherId !== undefined`). Older
       // clients that just call `publishVersion` without an owner param would
       // otherwise accidentally migrate org-owned skills back into the caller's
       // personal namespace on every publish.
+      //
       // Defense in depth: `addMember` does not currently require publisher.kind ===
       // "org", so in principle a user-kind ("personal") publisher can end up with
       // extra members beyond its linkedUser. We refuse migration *out* of a
@@ -7735,17 +7744,20 @@ export const insertVersion = internalMutation({
       // way to move a personal skill is "the owner themselves decides to move
       // it" — never "a third party who happens to share a publisher row".
       const sourcePublisher = await ctx.db.get(skill.ownerPublisherId);
-      const sourceIsSafeToMigrateFrom =
-        sourcePublisher?.kind === "org" ||
-        (sourcePublisher?.kind === "user" && sourcePublisher.linkedUserId === userId);
+      const callerOwnsSourceViaPersonalLink =
+        sourcePublisher?.kind === "user" && sourcePublisher.linkedUserId === userId;
+      const sourceIsOrg = sourcePublisher?.kind === "org";
 
       const sourceMembership =
-        callerExplicitlySpecifiedOwner && sourceIsSafeToMigrateFrom
+        callerExplicitlySpecifiedOwner && sourceIsOrg
           ? await getPublisherMembership(ctx, skill.ownerPublisherId, userId)
           : null;
-      const callerCanPublishFromSource = Boolean(
-        sourceMembership && isPublisherRoleAllowed(sourceMembership.role, ["publisher"]),
+      const callerHasSourceAdminRole = Boolean(
+        sourceMembership && isPublisherRoleAllowed(sourceMembership.role, ["admin"]),
       );
+      const callerCanPublishFromSource =
+        callerExplicitlySpecifiedOwner &&
+        (callerOwnsSourceViaPersonalLink || callerHasSourceAdminRole);
 
       if (!callerCanPublishFromSource) {
         const owner = await getOwnerPublisher(ctx, {
