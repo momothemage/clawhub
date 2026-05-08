@@ -71,6 +71,10 @@ export function Upload() {
         skill?: { slug: string; displayName: string };
         soul?: { slug: string; displayName: string };
         latestVersion?: { version: string };
+        // Present on skills.getBySlug; absent on souls.getBySlug. Used to
+        // default the Owner selector to the skill's current owner in update
+        // mode so a New Version publish does not silently re-own the skill.
+        owner?: { handle: string; displayName?: string };
       }
     | null
     | undefined;
@@ -106,6 +110,12 @@ export function Upload() {
       }>
     | undefined;
   const [ownerHandle, setOwnerHandle] = useState("");
+  // Owner migration opt-in: when updating an existing skill under a different
+  // publisher than its current owner, the backend requires an explicit
+  // `migrateOwner: true` signal. We only send it when the user ticks this box,
+  // so a wrong default in the Owner selector cannot silently transfer
+  // ownership.
+  const [confirmMigrateOwner, setConfirmMigrateOwner] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const setFileInputRef = (node: HTMLInputElement | null) => {
@@ -204,13 +214,21 @@ export function Upload() {
 
   useEffect(() => {
     if (ownerHandle) return;
+    // In update mode, default the Owner selector to the skill's current owner
+    // so the New Version flow is a same-owner republish by default and does
+    // not require an ownership-migration opt-in for the common case.
+    const existingOwnerHandle = !isSoulMode ? existing?.owner?.handle : undefined;
+    if (existingOwnerHandle) {
+      setOwnerHandle(existingOwnerHandle);
+      return;
+    }
     const personalPublisher = publisherMemberships?.find(
       (entry) => entry.publisher.kind === "user",
     );
     if (personalPublisher?.publisher.handle) {
       setOwnerHandle(personalPublisher.publisher.handle);
     }
-  }, [ownerHandle, publisherMemberships]);
+  }, [ownerHandle, publisherMemberships, existing, isSoulMode]);
 
   useEffect(() => {
     if (changelogTouchedRef.current) return;
@@ -267,6 +285,21 @@ export function Upload() {
     trimmedSlug,
     trimmedVersion,
   ]);
+  // Detect ownership migration intent. We only treat it as a migration when:
+  //   * updating an existing skill (`updateSlug` + loaded existing),
+  //   * the caller has picked a different Owner than the skill currently has,
+  //   * not in soul mode (souls don't carry a publisher owner).
+  // The submit button is disabled until the user ticks the explicit
+  // `confirmMigrateOwner` checkbox, mirroring the backend's `migrateOwner`
+  // contract.
+  const existingOwnerHandle = !isSoulMode ? (existing?.owner?.handle ?? null) : null;
+  const isOwnerMigration = Boolean(
+    !isSoulMode &&
+    updateSlug &&
+    existingOwnerHandle &&
+    ownerHandle &&
+    ownerHandle !== existingOwnerHandle,
+  );
   const parsedTags = useMemo(
     () =>
       tags
@@ -299,6 +332,11 @@ export function Upload() {
     }
     if (!hasRequiredFile) {
       issues.push(`${requiredFileLabel} is required.`);
+    }
+    if (isOwnerMigration && !confirmMigrateOwner) {
+      issues.push(
+        `Confirm the ownership move from @${existingOwnerHandle} to @${ownerHandle} to publish.`,
+      );
     }
     const invalidFiles = files.filter((file) => !isTextFile(file));
     if (invalidFiles.length > 0) {
@@ -336,6 +374,10 @@ export function Upload() {
     oversizedFileNames,
     requiredFileLabel,
     slugCollision,
+    isOwnerMigration,
+    confirmMigrateOwner,
+    existingOwnerHandle,
+    ownerHandle,
   ]);
 
   // webkitdirectory/directory attributes are set via the ref callback (setFileInputRef)
@@ -433,6 +475,10 @@ export function Upload() {
     try {
       const result = await publishVersion({
         ownerHandle: isSoulMode ? undefined : ownerHandle || undefined,
+        // Only propagate the migration opt-in when the user is actually
+        // changing the skill's owner AND has explicitly confirmed the move.
+        // Same-owner republishes must never carry `migrateOwner: true`.
+        migrateOwner: !isSoulMode && isOwnerMigration && confirmMigrateOwner ? true : undefined,
         slug: trimmedSlug,
         displayName: trimmedName,
         version: trimmedVersion,
@@ -509,7 +555,14 @@ export function Upload() {
                     className="w-full min-h-[44px] rounded-[var(--radius-sm)] border px-3.5 py-[13px] text-[color:var(--ink)] transition-all duration-[180ms] ease-out border-[rgba(29,59,78,0.22)] bg-[rgba(255,255,255,0.94)] focus:outline-none focus:border-[color-mix(in_srgb,var(--accent)_70%,white)] focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_22%,transparent)] dark:border-[rgba(255,255,255,0.12)] dark:bg-[rgba(14,28,37,0.84)]"
                     id="ownerHandle"
                     value={ownerHandle}
-                    onChange={(event) => setOwnerHandle(event.target.value)}
+                    onChange={(event) => {
+                      setOwnerHandle(event.target.value);
+                      // Reset the migration confirmation any time the Owner
+                      // selector changes; the user must re-acknowledge the move
+                      // after picking a different target to avoid a stale tick
+                      // turning into a silent transfer.
+                      setConfirmMigrateOwner(false);
+                    }}
                   >
                     {(publisherMemberships ?? []).map((entry) => (
                       <option key={entry.publisher._id} value={entry.publisher.handle}>
@@ -517,6 +570,22 @@ export function Upload() {
                       </option>
                     ))}
                   </select>
+                  {isOwnerMigration ? (
+                    <label className="flex items-start gap-2 text-sm cursor-pointer mt-2">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={confirmMigrateOwner}
+                        onChange={(event) => setConfirmMigrateOwner(event.target.checked)}
+                      />
+                      <span>
+                        Move ownership of <strong>{trimmedSlug || "this skill"}</strong> from{" "}
+                        <strong>@{existingOwnerHandle}</strong> to <strong>@{ownerHandle}</strong>.
+                        Versions, tags, stats, comments and stars are preserved; the old URL
+                        redirects to the new one.
+                      </span>
+                    </label>
+                  ) : null}
                 </>
               ) : null}
 

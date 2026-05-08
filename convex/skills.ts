@@ -6220,6 +6220,11 @@ export const getVersionBySkillAndVersion = query({
 export const publishVersion: ReturnType<typeof action> = action({
   args: {
     ownerHandle: v.optional(v.string()),
+    // Explicit opt-in from the client to migrate an existing skill's owner
+    // when `ownerHandle` differs from the skill's current owner. Without this
+    // flag, a mismatching Owner selector is treated as a slug collision so
+    // re-publishes cannot silently transfer ownership.
+    migrateOwner: v.optional(v.boolean()),
     slug: v.string(),
     displayName: v.string(),
     version: v.string(),
@@ -6254,6 +6259,7 @@ export const publishVersion: ReturnType<typeof action> = action({
     })) as { publisherId: Id<"publishers"> };
     return publishVersionForUser(ctx, userId, args, {
       ownerPublisherId: target.publisherId,
+      migrateOwner: args.migrateOwner,
     });
   },
 });
@@ -7580,6 +7586,13 @@ export const insertVersion = internalMutation({
   args: {
     userId: v.id("users"),
     ownerPublisherId: v.optional(v.id("publishers")),
+    // Explicit opt-in to owner migration. When an existing skill row already has
+    // a different `ownerPublisherId` than the one supplied above, the mutation
+    // only rewrites ownership if `migrateOwner === true`. Without this flag the
+    // mismatch is surfaced as a slug-collision error (the pre-org-migration
+    // behaviour), so a silently-different Owner value in an older CLI or a
+    // wrongly-defaulted form cannot re-own an org-owned skill by accident.
+    migrateOwner: v.optional(v.boolean()),
     slug: v.string(),
     displayName: v.string(),
     version: v.string(),
@@ -7716,26 +7729,31 @@ export const insertVersion = internalMutation({
     if (skill && skill.ownerPublisherId && skill.ownerPublisherId !== ownerPublisherId) {
       // Owner migration: allow publishing under a different publisher (e.g. moving
       // a skill from a personal publisher into an org, or between orgs) only when
-      // the caller has sufficient authority on BOTH sides.
+      // the caller has sufficient authority on BOTH sides AND has explicitly
+      // opted into a migration.
       //
       // Authority model — aligned with `transferPackage` in convex/packages.ts:
-      //   * target (destination) side — publisher-level rights are sufficient, and
-      //     have already been enforced above by `requirePublisherRole(..., ["publisher"])`
-      //     when `ownerPublisherId !== personalPublisher._id`. We keep that bar:
-      //     this mutation is semantically a publish, not a transfer-grant, so the
-      //     destination side does not need admin.
+      //   * destination side — publisher-level rights were already enforced above
+      //     (`requirePublisherRole(..., ["publisher"])`) when the caller is
+      //     publishing into an org. That is enough for *publishing* into the
+      //     destination, but *transferring ownership into* it is a stronger
+      //     operation, so on the migration path we additionally require ADMIN
+      //     rights on the destination publisher. Moving a skill into the
+      //     caller's own personal publisher is still allowed because
+      //     `ensurePersonalPublisherForUser` guarantees the caller is the
+      //     publisher's `linkedUser` with role `owner` (>= admin).
       //   * source side — must be ADMIN on the source publisher (or the linked
       //     personal-publisher user themselves). This matches the transfer spec:
       //     moving a skill *out* of an org is an ownership change, so a plain
       //     "publisher" role member must not be able to trigger it by republishing.
-      //     Previously this only required source publisher-role, which let any
-      //     org member walk skills out of the org into their personal namespace.
       //
       // We also require the caller to have *explicitly* asked to publish under
-      // a specific publisher (`args.ownerPublisherId !== undefined`). Older
-      // clients that just call `publishVersion` without an owner param would
-      // otherwise accidentally migrate org-owned skills back into the caller's
-      // personal namespace on every publish.
+      // a specific publisher (`args.ownerPublisherId !== undefined`) AND to
+      // have explicitly signalled migration intent (`args.migrateOwner === true`).
+      // Older clients that just call `publishVersion` without an owner param, or
+      // newer clients where the Owner selector defaulted to the caller's
+      // personal publisher, would otherwise accidentally migrate org-owned
+      // skills on every publish.
       //
       // Defense in depth: `addMember` does not currently require publisher.kind ===
       // "org", so in principle a user-kind ("personal") publisher can end up with
@@ -7743,13 +7761,14 @@ export const insertVersion = internalMutation({
       // user-kind publisher unless the caller IS its linkedUser, so the only
       // way to move a personal skill is "the owner themselves decides to move
       // it" — never "a third party who happens to share a publisher row".
+      const callerRequestedMigration = args.migrateOwner === true;
       const sourcePublisher = await ctx.db.get(skill.ownerPublisherId);
       const callerOwnsSourceViaPersonalLink =
         sourcePublisher?.kind === "user" && sourcePublisher.linkedUserId === userId;
       const sourceIsOrg = sourcePublisher?.kind === "org";
 
       const sourceMembership =
-        callerExplicitlySpecifiedOwner && sourceIsOrg
+        callerExplicitlySpecifiedOwner && callerRequestedMigration && sourceIsOrg
           ? await getPublisherMembership(ctx, skill.ownerPublisherId, userId)
           : null;
       const callerHasSourceAdminRole = Boolean(
@@ -7757,6 +7776,7 @@ export const insertVersion = internalMutation({
       );
       const callerCanPublishFromSource =
         callerExplicitlySpecifiedOwner &&
+        callerRequestedMigration &&
         (callerOwnsSourceViaPersonalLink || callerHasSourceAdminRole);
 
       if (!callerCanPublishFromSource) {
@@ -7767,14 +7787,53 @@ export const insertVersion = internalMutation({
         throw new ConvexError(buildSlugTakenErrorMessage(skill, owner));
       }
 
+      // Destination admin check: publishing into a publisher only requires
+      // publisher-level rights, but *transferring ownership into* a publisher
+      // requires admin-level rights on that destination too. For the caller's
+      // own personal publisher this is trivially satisfied (linkedUser ===
+      // role "owner"); for an org destination this rejects plain publishers.
+      await requirePublisherRole(ctx, {
+        publisherId: ownerPublisherId,
+        userId,
+        allowed: ["admin"],
+      });
+
       const previousOwnerPublisherId = skill.ownerPublisherId;
       const previousOwnerUserId = skill.ownerUserId;
+
+      const nextSkill: Doc<"skills"> = {
+        ...skill,
+        ownerPublisherId,
+        ownerUserId: userId,
+        updatedAt: now,
+      };
 
       await ctx.db.patch(skill._id, {
         ownerPublisherId,
         ownerUserId: userId,
         updatedAt: now,
       });
+
+      // Reassign per-user counters from the previous owner to the new one.
+      // Without this, `users.publishedSkills / totalStars / totalDownloads`
+      // would still credit the source owner after an org→org or
+      // personal→org migration (and double-count once the new owner
+      // publishes anything else). `adjustUserSkillStatsForSkillChange`
+      // already handles the cross-owner move cleanly — this mirrors the
+      // moderator `changeOwner` path above.
+      await adjustUserSkillStatsForSkillChange(ctx, skill, nextSkill);
+
+      // Keep `skillEmbeddings.ownerId` in sync with the skill's owner so
+      // "authored by" queries/filters and embedding-side access checks
+      // don't keep resolving to the previous owner after the migration.
+      const embeddings = await listSkillEmbeddingsForSkill(ctx, skill._id);
+      for (const embedding of embeddings) {
+        if (embedding.ownerId === userId) continue;
+        await ctx.db.patch(embedding._id, {
+          ownerId: userId,
+          updatedAt: now,
+        });
+      }
 
       // Keep existing slug aliases pointed at the new owner so old URLs still
       // resolve correctly while the canonical page moves (the `$owner/$slug`
@@ -7807,7 +7866,7 @@ export const insertVersion = internalMutation({
         createdAt: now,
       });
 
-      skill = { ...skill, ownerPublisherId, ownerUserId: userId };
+      skill = nextSkill;
     }
 
     if (skill && !skill.ownerPublisherId && skill.ownerUserId !== userId) {

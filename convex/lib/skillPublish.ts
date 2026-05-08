@@ -82,6 +82,11 @@ export type PublishOptions = {
   skipBackup?: boolean;
   skipWebhook?: boolean;
   ownerPublisherId?: Id<"publishers">;
+  // Explicit opt-in to owner migration. The `insertVersion` mutation refuses
+  // to rewrite a skill's `ownerPublisherId` unless this is `true`, so default
+  // publishes (including older CLIs that never pass this flag) can never
+  // accidentally transfer ownership.
+  migrateOwner?: boolean;
 };
 
 export async function publishVersionForUser(
@@ -299,6 +304,7 @@ export async function publishVersionForUser(
   const publishResult = (await ctx.runMutation(internal.skills.insertVersion, {
     userId,
     ownerPublisherId: options.ownerPublisherId,
+    migrateOwner: options.migrateOwner,
     slug,
     displayName,
     version,

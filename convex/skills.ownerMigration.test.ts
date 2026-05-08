@@ -186,9 +186,17 @@ function createMigrationFixture(params: {
             build(q);
             return {
               unique: async () => {
-                // Synthesize an "owner" membership for every personal publisher
-                // so ensurePersonalPublisherForUser's internal patch/insert path
-                // doesn't trip on missing members.
+                // Caller's role on the target org defaults to "publisher" in
+                // these tests (that's the precondition the first-pass
+                // `requirePublisherRole(..., ["publisher"])` check expects).
+                // Individual tests can upgrade this to admin/owner by passing
+                // a matching entry in `sourceMemberships`, which we consult
+                // FIRST so it can override the default. Source-publisher
+                // membership is parameterized per-test the same way.
+                const override = params.sourceMemberships.find(
+                  (m) => m.publisherId === publisherId && m.userId === userId,
+                );
+                if (override) return override;
                 if (publisherId === "publishers:personalCaller" && userId === "users:caller") {
                   return {
                     _id: "publisherMembers:personalCaller",
@@ -197,10 +205,6 @@ function createMigrationFixture(params: {
                     role: "owner",
                   };
                 }
-                // Caller always has publisher-role on the target org in these
-                // tests; that's the precondition `requirePublisherRole` checks
-                // above our new migration branch. Source-publisher membership
-                // is parameterized per-test via `sourceMemberships`.
                 if (publisherId === "publishers:org" && userId === "users:caller") {
                   return {
                     _id: "publisherMembers:orgCaller",
@@ -209,10 +213,7 @@ function createMigrationFixture(params: {
                     role: "publisher",
                   };
                 }
-                const match = params.sourceMemberships.find(
-                  (m) => m.publisherId === publisherId && m.userId === userId,
-                );
-                return match ?? null;
+                return null;
               },
             };
           },
@@ -270,6 +271,30 @@ function createMigrationFixture(params: {
           },
         };
       }
+      if (table === "skillEmbeddings") {
+        return {
+          withIndex: (name: string) => {
+            if (name === "by_skill") {
+              // Single mock embedding for `skills:1` so the migration branch
+              // exercises the embedding-ownerId reassignment loop. Older
+              // `ownerId` is the source owner derived from the skill source
+              // mode, mirroring how embeddings get written at publish time.
+              const mode: SkillSourceMode = params.skillSource ?? "other-personal";
+              const ownerId = mode === "caller-personal" ? "users:caller" : "users:sourceOwner";
+              return {
+                collect: async () => [
+                  {
+                    _id: "skillEmbeddings:1",
+                    skillId: "skills:1",
+                    ownerId,
+                  },
+                ],
+              };
+            }
+            throw new Error(`unexpected skillEmbeddings index ${name}`);
+          },
+        };
+      }
       if (table === "authAccounts") {
         return {
           withIndex: () => ({
@@ -300,8 +325,15 @@ describe("skills.insertVersion owner migration", () => {
   it("rejects slug migration when caller has no membership on the source publisher", async () => {
     const fixture = createMigrationFixture({ sourceMemberships: [] });
 
+    // Pass `migrateOwner: true` so this test actually exercises the
+    // source-authority check. Without the opt-in, the request would be
+    // rejected by the explicit-intent gate instead and the authority check
+    // below would never run.
     await expect(
-      insertVersionHandler({ db: fixture.db } as never, buildPublishArgs() as never),
+      insertVersionHandler(
+        { db: fixture.db } as never,
+        buildPublishArgs({ migrateOwner: true }) as never,
+      ),
     ).rejects.toThrow(/Slug is already taken/);
 
     // The skill row must NOT be patched when the caller is not a source member.
@@ -333,7 +365,10 @@ describe("skills.insertVersion owner migration", () => {
     });
 
     await expect(
-      insertVersionHandler({ db: fixture.db } as never, buildPublishArgs() as never),
+      insertVersionHandler(
+        { db: fixture.db } as never,
+        buildPublishArgs({ migrateOwner: true }) as never,
+      ),
     ).rejects.toThrow(/Slug is already taken/);
 
     const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
@@ -358,11 +393,23 @@ describe("skills.insertVersion owner migration", () => {
           userId: "users:caller",
           role: "admin",
         },
+        // Destination admin role is also required on the migration path now
+        // (matching transferPackage). Without this the migration would be
+        // rejected even though the source side is satisfied.
+        {
+          _id: "publisherMembers:orgAdminCaller",
+          publisherId: "publishers:org",
+          userId: "users:caller",
+          role: "admin",
+        },
       ],
     });
 
     await expect(
-      insertVersionHandler({ db: fixture.db } as never, buildPublishArgs() as never),
+      insertVersionHandler(
+        { db: fixture.db } as never,
+        buildPublishArgs({ migrateOwner: true }) as never,
+      ),
     ).rejects.toThrow(SENTINEL_BAIL_MESSAGE);
 
     const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
@@ -388,6 +435,22 @@ describe("skills.insertVersion owner migration", () => {
       ownerPublisherId: "publishers:org",
       ownerUserId: "users:caller",
     });
+
+    // Cross-owner migration must also rebalance the per-user skill counters
+    // (publishedSkills / totalStars / totalDownloads) so the previous owner
+    // stops being credited for the skill. This mirrors the maintenance the
+    // moderator `changeOwner` path performs via
+    // `adjustUserSkillStatsForSkillChange`.
+    const prevOwnerStatsPatch = fixture.patchCalls.find((p) => p.id === "users:sourceOwner");
+    expect(prevOwnerStatsPatch?.value).toMatchObject({ publishedSkills: 0 });
+    const nextOwnerStatsPatch = fixture.patchCalls.find((p) => p.id === "users:caller");
+    expect(nextOwnerStatsPatch?.value).toMatchObject({ publishedSkills: 1 });
+
+    // And the skill's embedding must be re-homed to the new owner so that
+    // "authored by" queries don't keep resolving to the previous owner.
+    const embeddingPatches = fixture.patchCalls.filter((p) => p.id === "skillEmbeddings:1");
+    expect(embeddingPatches).toHaveLength(1);
+    expect(embeddingPatches[0]?.value).toMatchObject({ ownerId: "users:caller" });
   });
 
   it("migrates ownership when caller moves their OWN personal skill into an org they belong to", async () => {
@@ -395,15 +458,27 @@ describe("skills.insertVersion owner migration", () => {
     // publisher and wants to republish under `@casualsecurityinc`.
     const fixture = createMigrationFixture({
       skillSource: "caller-personal",
-      // No extra memberships needed — ensurePersonalPublisherForUser already
-      // grants the caller an "owner" membership on publishers:personalCaller.
-      sourceMemberships: [],
+      sourceMemberships: [
+        // ensurePersonalPublisherForUser already grants the caller an "owner"
+        // membership on publishers:personalCaller, so the source side is
+        // covered. The destination (the org) needs admin-level rights now
+        // (matching transferPackage), so we grant that explicitly here.
+        {
+          _id: "publisherMembers:orgAdminCaller",
+          publisherId: "publishers:org",
+          userId: "users:caller",
+          role: "admin",
+        },
+      ],
     });
 
     // After the migration branch succeeds we bail out via a sentinel so we can
     // assert on the side-effects without fully mocking downstream pipeline.
     await expect(
-      insertVersionHandler({ db: fixture.db } as never, buildPublishArgs() as never),
+      insertVersionHandler(
+        { db: fixture.db } as never,
+        buildPublishArgs({ migrateOwner: true }) as never,
+      ),
     ).rejects.toThrow(SENTINEL_BAIL_MESSAGE);
 
     const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
@@ -429,6 +504,13 @@ describe("skills.insertVersion owner migration", () => {
       ownerPublisherId: "publishers:org",
       ownerUserId: "users:caller",
     });
+
+    // When the skill's `ownerUserId` doesn't actually change (personal → org
+    // owned by the same user), the embedding's `ownerId` was already correct
+    // and must not be rewritten. This exercises the early-continue branch in
+    // the embedding reassignment loop and avoids a no-op patch storm.
+    const embeddingPatches = fixture.patchCalls.filter((p) => p.id === "skillEmbeddings:1");
+    expect(embeddingPatches).toHaveLength(0);
   });
 
   it("refuses to migrate a skill out of SOMEONE ELSE'S personal publisher even if caller happens to be a member", async () => {
@@ -448,7 +530,10 @@ describe("skills.insertVersion owner migration", () => {
     });
 
     await expect(
-      insertVersionHandler({ db: fixture.db } as never, buildPublishArgs() as never),
+      insertVersionHandler(
+        { db: fixture.db } as never,
+        buildPublishArgs({ migrateOwner: true }) as never,
+      ),
     ).rejects.toThrow(/Slug is already taken/);
 
     const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
@@ -476,7 +561,7 @@ describe("skills.insertVersion owner migration", () => {
       ],
     });
 
-    const argsWithoutOwner = buildPublishArgs();
+    const argsWithoutOwner = buildPublishArgs({ migrateOwner: true });
     delete (argsWithoutOwner as Record<string, unknown>).ownerPublisherId;
 
     await expect(
@@ -486,6 +571,67 @@ describe("skills.insertVersion owner migration", () => {
     const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
     expect(skillPatches).toHaveLength(0);
 
+    const migrationAudits = fixture.insertCalls.filter(
+      (call) => call.table === "auditLogs" && call.value.action === "skill.ownership.migrate",
+    );
+    expect(migrationAudits).toHaveLength(0);
+  });
+
+  it("rejects migration when caller does NOT pass migrateOwner:true even with full source+destination authority", async () => {
+    // Explicit-intent gate: even if the caller has all the authority needed
+    // on both sides, refusing to pass `migrateOwner: true` must be treated as
+    // "not trying to move the skill" and fall through to the slug-collision
+    // error. This is what protects the New Version form from silently
+    // re-owning a skill whose Owner selector happens to default to the
+    // caller's personal publisher.
+    const fixture = createMigrationFixture({
+      skillSource: "caller-personal",
+      sourceMemberships: [
+        {
+          _id: "publisherMembers:orgAdminCaller",
+          publisherId: "publishers:org",
+          userId: "users:caller",
+          role: "admin",
+        },
+      ],
+    });
+
+    await expect(
+      insertVersionHandler({ db: fixture.db } as never, buildPublishArgs() as never),
+    ).rejects.toThrow(/Slug is already taken/);
+
+    const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
+    expect(skillPatches).toHaveLength(0);
+    const migrationAudits = fixture.insertCalls.filter(
+      (call) => call.table === "auditLogs" && call.value.action === "skill.ownership.migrate",
+    );
+    expect(migrationAudits).toHaveLength(0);
+  });
+
+  it("rejects migration when caller is only 'publisher' (not admin) on the DESTINATION org", async () => {
+    // Destination authority check (aligned with transferPackage in
+    // convex/packages.ts): publishing into an org only requires publisher
+    // role, but *transferring ownership into* the org requires admin-level
+    // rights on that destination too. A plain publisher on the destination
+    // org must not be able to pull a skill into the org namespace via a
+    // republish even if source-side authority is fully satisfied.
+    const fixture = createMigrationFixture({
+      skillSource: "caller-personal",
+      // Grant NO admin role on publishers:org — the default fixture wiring
+      // already gives the caller "publisher" role there, which is what we
+      // want to test against.
+      sourceMemberships: [],
+    });
+
+    await expect(
+      insertVersionHandler(
+        { db: fixture.db } as never,
+        buildPublishArgs({ migrateOwner: true }) as never,
+      ),
+    ).rejects.toThrow();
+
+    const skillPatches = fixture.patchCalls.filter((p) => p.id === "skills:1");
+    expect(skillPatches).toHaveLength(0);
     const migrationAudits = fixture.insertCalls.filter(
       (call) => call.table === "auditLogs" && call.value.action === "skill.ownership.migrate",
     );
