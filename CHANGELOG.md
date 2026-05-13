@@ -10,6 +10,9 @@
 - CLI/API: include skill owner handles in search results so duplicate/common
   slugs are easier to disambiguate (thanks @vyctorbrzezowski).
 - Web: let skill publishers pick a curated lucide icon for cards and listings (#2174) (thanks @momothemage).
+- Web/API: add keyword-based plugin categories plus API-backed plugin search
+  sorting for recently updated, newest, and name (#2118) (thanks
+  @vyctorbrzezowski).
 - Web: polish the starred skills page with grid/list controls, sorting, and
   optimistic unstar behavior (#2159) (thanks @vyctorbrzezowski).
 - API/docs: expand the v1 OpenAPI contract with package/plugin catalog

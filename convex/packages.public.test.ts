@@ -93,6 +93,7 @@ const listPublicPageHandler = (
       isOfficial?: boolean;
       executesCode?: boolean;
       capabilityTag?: string;
+      category?: string;
       paginationOpts: { cursor: string | null; numItems: number };
     },
     { page: Array<{ name: string }>; isDone: boolean; continueCursor: string }
@@ -106,6 +107,7 @@ const listPageForViewerInternalHandler = (
       isOfficial?: boolean;
       executesCode?: boolean;
       capabilityTag?: string;
+      category?: string;
       viewerUserId?: string;
       paginationOpts: { cursor: string | null; numItems: number };
     },
@@ -198,6 +200,7 @@ const searchPublicHandler = (
       isOfficial?: boolean;
       executesCode?: boolean;
       capabilityTag?: string;
+      category?: string;
     },
     Array<{ package: { name: string } }>
   >
@@ -212,6 +215,7 @@ const searchForViewerInternalHandler = (
       isOfficial?: boolean;
       executesCode?: boolean;
       capabilityTag?: string;
+      category?: string;
       viewerUserId?: string;
     },
     Array<{ package: { name: string } }>
@@ -596,6 +600,7 @@ function makeDigest(
     updatedAt: 1,
     latestVersion: "1.0.0",
     capabilityTags: [],
+    pluginCategoryTags: [],
     executesCode: false,
     verificationTier: null,
     softDeletedAt: undefined,
@@ -651,6 +656,11 @@ function makeDigestCtx(options: {
     isDone: boolean;
     continueCursor: string;
   }>;
+  categoryPages?: Array<{
+    page: Array<Record<string, unknown>>;
+    isDone: boolean;
+    continueCursor: string;
+  }>;
   exactPackages?: Array<Record<string, unknown>>;
   exactDigests?: Array<Record<string, unknown>>;
   publisherMemberships?: Record<string, "owner" | "admin" | "publisher">;
@@ -700,6 +710,7 @@ function makeDigestCtx(options: {
 
   setPages("packageSearchDigest", options.pages ?? []);
   setPages("packageCapabilitySearchDigest", options.capabilityPages ?? []);
+  setPages("packagePluginCategorySearchDigest", options.categoryPages ?? []);
 
   const paginate = vi.fn();
   const take = vi.fn();
@@ -903,7 +914,10 @@ function makeDigestCtx(options: {
               },
             };
           }
-          if (table !== "packageCapabilitySearchDigest") {
+          if (
+            table !== "packageCapabilitySearchDigest" &&
+            table !== "packagePluginCategorySearchDigest"
+          ) {
             throw new Error(`Unexpected table ${table}`);
           }
           tableNames.push(table);
@@ -1134,7 +1148,10 @@ function makeTransferPackageOwnerCtx(options?: {
               })),
             };
           }
-          if (table === "packageCapabilitySearchDigest") {
+          if (
+            table === "packageCapabilitySearchDigest" ||
+            table === "packagePluginCategorySearchDigest"
+          ) {
             return {
               withIndex: vi.fn(() => ({
                 collect: vi.fn().mockResolvedValue([]),
@@ -1220,7 +1237,10 @@ function makeUserTransferPackageOwnerCtx(options?: {
               })),
             };
           }
-          if (table === "packageCapabilitySearchDigest") {
+          if (
+            table === "packageCapabilitySearchDigest" ||
+            table === "packagePluginCategorySearchDigest"
+          ) {
             return {
               withIndex: vi.fn(() => ({
                 collect: vi.fn().mockResolvedValue([]),
@@ -1441,7 +1461,10 @@ function makeSoftDeletePackageCtx(options?: {
               })),
             };
           }
-          if (table === "packageCapabilitySearchDigest") {
+          if (
+            table === "packageCapabilitySearchDigest" ||
+            table === "packagePluginCategorySearchDigest"
+          ) {
             return {
               withIndex: vi.fn(() => ({
                 collect: vi.fn().mockResolvedValue(capabilityDigests),
@@ -1892,6 +1915,61 @@ describe("packages public queries", () => {
     expect(result.map((entry) => entry.package.name)).toEqual(["tools-demo"]);
     expect(tableNames).toEqual(["packageCapabilitySearchDigest"]);
     expect(indexNames).toEqual(["by_active_tag_executes_updated"]);
+  });
+
+  it("uses plugin category digests for category-filtered listings", async () => {
+    const { ctx, indexNames, tableNames } = makeDigestCtx({
+      categoryPages: [
+        {
+          page: [
+            makeDigest("api-demo", {
+              pluginCategory: "data",
+              pluginCategoryTags: ["data"],
+              executesCode: true,
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await listPublicPageHandler(ctx, {
+      category: "data",
+      executesCode: true,
+      paginationOpts: { cursor: null, numItems: 10 },
+    });
+
+    expect(result.page.map((entry) => entry.name)).toEqual(["api-demo"]);
+    expect(tableNames).toEqual(["packagePluginCategorySearchDigest"]);
+    expect(indexNames).toEqual(["by_active_category_executes_updated"]);
+  });
+
+  it("uses plugin category digests for category-filtered search", async () => {
+    const { ctx, indexNames, tableNames } = makeDigestCtx({
+      categoryPages: [
+        {
+          page: [
+            makeDigest("api-demo", {
+              pluginCategory: "data",
+              pluginCategoryTags: ["data"],
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await searchPublicHandler(ctx, {
+      query: "api",
+      category: "data",
+      limit: 10,
+    });
+
+    expect(result.map((entry) => entry.package.name)).toEqual(["api-demo"]);
+    expect(tableNames).toEqual(["packagePluginCategorySearchDigest"]);
+    expect(indexNames).toEqual(["by_active_category_updated"]);
   });
 
   it("bounds fallback search to the first digest take window", async () => {

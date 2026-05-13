@@ -3572,6 +3572,26 @@ describe("httpApiV1 handlers", () => {
     );
   });
 
+  it("packages list supports category when scoped to a plugin family", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPackagesV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/packages?family=code-plugin&category=data&limit=7"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        family: "code-plugin",
+        category: "data",
+        paginationOpts: { cursor: null, numItems: 7 },
+      }),
+    );
+  });
+
   it("plugins list defaults to plugin package families", async () => {
     const codePlugin = {
       name: "code-plugin",
@@ -3617,10 +3637,45 @@ describe("httpApiV1 handlers", () => {
     for (const [, args] of runQuery.mock.calls) {
       expect(args).toEqual(
         expect.objectContaining({
+          category: undefined,
           paginationOpts: { cursor: null, numItems: 7 },
         }),
       );
     }
+  });
+
+  it("plugins list forwards category to both plugin families", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins?category=data&limit=7"),
+    );
+
+    expect(response.status).toBe(200);
+    for (const [, args] of runQuery.mock.calls) {
+      expect(args).toEqual(
+        expect.objectContaining({
+          category: "data",
+          paginationOpts: { cursor: null, numItems: 7 },
+        }),
+      );
+    }
+  });
+
+  it("plugins list rejects invalid categories", async () => {
+    const runQuery = vi.fn();
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins?category=other"),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Invalid plugin category");
+    expect(runQuery).not.toHaveBeenCalled();
   });
 
   it("plugins list paginates with separate plugin family cursors", async () => {
@@ -3689,6 +3744,60 @@ describe("httpApiV1 handlers", () => {
     ]);
   });
 
+  it("plugins list ignores stale plugin search cursors", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const staleSearchCursor = `pkgpluginsearch:${JSON.stringify({
+      codePlugins: { cursor: "code-search", offset: 0, pageSize: 2, done: false },
+      bundlePlugins: { cursor: null, offset: 0, pageSize: 2, done: true },
+    })}`;
+
+    const response = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        `https://example.com/api/v1/plugins?limit=7&cursor=${encodeURIComponent(staleSearchCursor)}`,
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    const packageCalls = runQuery.mock.calls
+      .map(([, args]) => args as { family?: string; paginationOpts?: { cursor: string | null } })
+      .filter((args) => args.family === "code-plugin" || args.family === "bundle-plugin");
+    expect(packageCalls.map((args) => args.paginationOpts?.cursor ?? null)).toEqual([null, null]);
+  });
+
+  it("package and plugin lists ignore stale skill cursors", async () => {
+    const runQuery = vi.fn().mockResolvedValue({ page: [], isDone: true, continueCursor: "" });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const staleSkillCursor = `skillcat:${JSON.stringify({
+      cursor: "skill-cursor",
+      offset: 0,
+      pageSize: 20,
+      done: false,
+    })}`;
+
+    const packagesResponse = await __handlers.listPackagesV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        `https://example.com/api/v1/packages?limit=7&cursor=${encodeURIComponent(staleSkillCursor)}`,
+      ),
+    );
+    const pluginsResponse = await __handlers.listPluginsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        `https://example.com/api/v1/plugins?limit=7&cursor=${encodeURIComponent(staleSkillCursor)}`,
+      ),
+    );
+
+    expect(packagesResponse.status).toBe(200);
+    expect(pluginsResponse.status).toBe(200);
+    const cursors = runQuery.mock.calls
+      .map(([, args]) => (args as { paginationOpts?: { cursor: string | null } }).paginationOpts)
+      .filter(Boolean)
+      .map((pagination) => pagination?.cursor ?? null);
+    expect(cursors).toEqual(cursors.map(() => null));
+  });
+
   it("packages search supports family=skill on the generic route", async () => {
     const runQuery = vi.fn().mockResolvedValue([]);
     const runMutation = vi.fn().mockResolvedValue(okRate());
@@ -3703,6 +3812,28 @@ describe("httpApiV1 handlers", () => {
       expect.anything(),
       expect.objectContaining({
         query: "demo",
+      }),
+    );
+  });
+
+  it("packages search supports category when scoped to a plugin family", async () => {
+    const runQuery = vi.fn().mockResolvedValue([]);
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.packagesGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        "https://example.com/api/v1/packages/search?q=api&family=code-plugin&category=data",
+      ),
+    );
+
+    expect(response.status).toBe(200);
+    expect(runQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        query: "api",
+        family: "code-plugin",
+        category: "data",
       }),
     );
   });
@@ -3747,7 +3878,7 @@ describe("httpApiV1 handlers", () => {
 
     const response = await __handlers.pluginsGetRouterV1Handler(
       makeCtx({ runQuery, runMutation }),
-      new Request("https://example.com/api/v1/plugins/search?q=weather&limit=7"),
+      new Request("https://example.com/api/v1/plugins/search?q=weather&category=data&limit=7"),
     );
 
     expect(response.status).toBe(200);
@@ -3762,6 +3893,7 @@ describe("httpApiV1 handlers", () => {
       expect(args).toEqual(
         expect.objectContaining({
           query: "weather",
+          category: "data",
           limit: 7,
         }),
       );
@@ -3819,6 +3951,42 @@ describe("httpApiV1 handlers", () => {
       { family: "code-plugin", name: "plugin-code" },
       { family: "code-plugin", name: "shared-plugin" },
     ]);
+  });
+
+  it("plugins search ignores client-only sort and cursor params", async () => {
+    const runQuery = vi.fn((_, args: Record<string, unknown>) => {
+      expect(args).not.toHaveProperty("sort");
+      expect(args).not.toHaveProperty("cursor");
+      return [];
+    });
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+    const url = new URL("https://example.com/api/v1/plugins/search");
+    url.searchParams.set("q", "plugin");
+    url.searchParams.set("sort", "name");
+    url.searchParams.set("limit", "2");
+    url.searchParams.set("cursor", "pkgplugins:stale");
+
+    const response = await __handlers.pluginsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(url),
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).results).toEqual([]);
+  });
+
+  it("plugins search rejects invalid categories", async () => {
+    const runQuery = vi.fn();
+    const runMutation = vi.fn().mockResolvedValue(okRate());
+
+    const response = await __handlers.pluginsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request("https://example.com/api/v1/plugins/search?q=plugin&category=other"),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Invalid plugin category");
+    expect(runQuery).not.toHaveBeenCalled();
   });
 
   it("packages list forwards viewerUserId for authenticated private package browsing", async () => {

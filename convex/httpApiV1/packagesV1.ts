@@ -14,6 +14,7 @@ import {
   PackageTransferRequestSchema,
   PackageTrustedPublisherUpsertRequestSchema,
   PublishTokenMintRequestSchema,
+  isPluginCategorySlug,
   parseArk,
   type PackageAppealListStatus,
   type PackageModerationQueueStatus,
@@ -330,6 +331,7 @@ type PackageListQueryArgs = {
   highlightedOnly?: boolean;
   executesCode?: boolean;
   capabilityTag?: string;
+  category?: string;
   viewerUserId?: Id<"users">;
   paginationOpts: { cursor: string | null; numItems: number };
 };
@@ -708,21 +710,31 @@ type PluginCatalogCursorState = {
   bundlePlugins: CatalogSourceCursorState;
 };
 
-type CatalogPageResult = {
-  page: CatalogListItem[];
+type CatalogPageResult<T> = {
+  page: T[];
   isDone: boolean;
   continueCursor: string;
 };
 
-type CatalogSourceState = {
+type CatalogSourceState<T> = {
   state: CatalogSourceCursorState;
-  page: CatalogPageResult | null;
+  page: CatalogPageResult<T> | null;
   pageCursor: string | null;
   index: number;
 };
 
 const UNIFIED_CATALOG_CURSOR_PREFIX = "pkgcatalog:";
 const PLUGIN_CATALOG_CURSOR_PREFIX = "pkgplugins:";
+const LEGACY_PLUGIN_SEARCH_CURSOR_PREFIX = "pkgpluginsearch:";
+const SKILL_CATALOG_CURSOR_PREFIX = "skillcat:";
+const PACKAGE_PAGE_CURSOR_PREFIX = "pkgpage:";
+const CATALOG_CURSOR_PREFIXES = [
+  UNIFIED_CATALOG_CURSOR_PREFIX,
+  PLUGIN_CATALOG_CURSOR_PREFIX,
+  LEGACY_PLUGIN_SEARCH_CURSOR_PREFIX,
+  SKILL_CATALOG_CURSOR_PREFIX,
+  PACKAGE_PAGE_CURSOR_PREFIX,
+];
 
 function defaultCatalogSourceCursorState(): CatalogSourceCursorState {
   return { cursor: null, offset: 0, pageSize: null, done: false };
@@ -732,10 +744,17 @@ function encodeUnifiedCatalogCursor(state: UnifiedCatalogCursorState) {
   return `${UNIFIED_CATALOG_CURSOR_PREFIX}${JSON.stringify(state)}`;
 }
 
+function isKnownCatalogCursor(raw: string | null | undefined) {
+  return Boolean(raw && CATALOG_CURSOR_PREFIXES.some((prefix) => raw.startsWith(prefix)));
+}
+
 function decodeUnifiedCatalogCursor(raw: string | null | undefined): UnifiedCatalogCursorState {
   if (!raw?.startsWith(UNIFIED_CATALOG_CURSOR_PREFIX)) {
     return {
-      packages: { ...defaultCatalogSourceCursorState(), cursor: raw ?? null },
+      packages: {
+        ...defaultCatalogSourceCursorState(),
+        cursor: isKnownCatalogCursor(raw) ? null : (raw ?? null),
+      },
       skills: defaultCatalogSourceCursorState(),
     };
   }
@@ -767,7 +786,10 @@ function encodePluginCatalogCursor(state: PluginCatalogCursorState) {
   return `${PLUGIN_CATALOG_CURSOR_PREFIX}${JSON.stringify(state)}`;
 }
 
-function decodePluginCatalogCursor(raw: string | null | undefined): PluginCatalogCursorState {
+function decodeMultiPluginCursor(
+  raw: string | null | undefined,
+  prefix: string,
+): PluginCatalogCursorState {
   const normalize = (
     input: Partial<CatalogSourceCursorState> | undefined,
   ): CatalogSourceCursorState => ({
@@ -777,16 +799,17 @@ function decodePluginCatalogCursor(raw: string | null | undefined): PluginCatalo
     done: input?.done === true,
   });
 
-  if (!raw?.startsWith(PLUGIN_CATALOG_CURSOR_PREFIX)) {
+  if (!raw?.startsWith(prefix)) {
     return {
-      codePlugins: { ...defaultCatalogSourceCursorState(), cursor: raw ?? null },
+      codePlugins: {
+        ...defaultCatalogSourceCursorState(),
+        cursor: isKnownCatalogCursor(raw) ? null : (raw ?? null),
+      },
       bundlePlugins: defaultCatalogSourceCursorState(),
     };
   }
   try {
-    const parsed = JSON.parse(
-      raw.slice(PLUGIN_CATALOG_CURSOR_PREFIX.length),
-    ) as Partial<PluginCatalogCursorState>;
+    const parsed = JSON.parse(raw.slice(prefix.length)) as Partial<PluginCatalogCursorState>;
     return {
       codePlugins: normalize(parsed.codePlugins),
       bundlePlugins: normalize(parsed.bundlePlugins),
@@ -799,7 +822,11 @@ function decodePluginCatalogCursor(raw: string | null | undefined): PluginCatalo
   }
 }
 
-function initCatalogSource(state: CatalogSourceCursorState): CatalogSourceState {
+function decodePluginCatalogCursor(raw: string | null | undefined): PluginCatalogCursorState {
+  return decodeMultiPluginCursor(raw, PLUGIN_CATALOG_CURSOR_PREFIX);
+}
+
+function initCatalogSource<T>(state: CatalogSourceCursorState): CatalogSourceState<T> {
   return {
     state: { ...state },
     page: null,
@@ -808,7 +835,7 @@ function initCatalogSource(state: CatalogSourceCursorState): CatalogSourceState 
   };
 }
 
-function finalizeCatalogSource(source: CatalogSourceState): CatalogSourceCursorState {
+function finalizeCatalogSource<T>(source: CatalogSourceState<T>): CatalogSourceCursorState {
   if (!source.page) return source.state;
   if (source.index < source.page.page.length) {
     return {
@@ -826,10 +853,10 @@ function finalizeCatalogSource(source: CatalogSourceState): CatalogSourceCursorS
   };
 }
 
-async function ensureCatalogSourcePage(
-  source: CatalogSourceState,
+async function ensureCatalogSourcePage<T>(
+  source: CatalogSourceState<T>,
   pageSize: number,
-  fetchPage: (cursor: string | null, pageSize: number) => Promise<CatalogPageResult>,
+  fetchPage: (cursor: string | null, pageSize: number) => Promise<CatalogPageResult<T>>,
 ) {
   while (true) {
     if (!source.page) {
@@ -882,6 +909,7 @@ async function searchPackageCatalog(
     highlightedOnly?: boolean;
     executesCode?: boolean;
     capabilityTag?: string;
+    category?: string;
     viewerUserId?: Id<"users">;
   },
 ): Promise<CatalogSearchEntry[]> {
@@ -897,6 +925,7 @@ async function searchPackageCatalog(
       highlightedOnly: args.highlightedOnly,
       executesCode: args.executesCode,
       capabilityTag: args.capabilityTag,
+      category: args.category,
       viewerUserId: args.viewerUserId,
     },
   );
@@ -1164,9 +1193,20 @@ async function listPackages(
   if (!highlightedOnlyParam.ok) return text(highlightedOnlyParam.message, 400, rate.headers);
   const executesCode = parseBooleanQueryParam(url.searchParams, "executesCode");
   if (!executesCode.ok) return text(executesCode.message, 400, rate.headers);
+  const category = url.searchParams.get("category")?.trim() || undefined;
+  if (category && !isPluginCategorySlug(category)) {
+    return text("Invalid plugin category", 400, rate.headers);
+  }
   const effectiveFamily = family ?? familyParam.value;
   const includeSkills = options?.includeSkills ?? effectiveFamily === undefined;
   const highlightedOnly = featured.value === true || highlightedOnlyParam.value === true;
+  if (category && (effectiveFamily === "skill" || (!effectiveFamily && includeSkills))) {
+    return text(
+      "Plugin category is only supported for plugin package endpoints",
+      400,
+      rate.headers,
+    );
+  }
 
   if (effectiveFamily === "skill") {
     const result = await runQueryRef<{
@@ -1189,8 +1229,12 @@ async function listPackages(
   }
 
   if (!effectiveFamily && includeSkills) {
-    const packageSource = initCatalogSource(decodeUnifiedCatalogCursor(cursor).packages);
-    const skillSource = initCatalogSource(decodeUnifiedCatalogCursor(cursor).skills);
+    const packageSource = initCatalogSource<CatalogListItem>(
+      decodeUnifiedCatalogCursor(cursor).packages,
+    );
+    const skillSource = initCatalogSource<CatalogListItem>(
+      decodeUnifiedCatalogCursor(cursor).skills,
+    );
     const pageSize = limit;
     const items: CatalogListItem[] = [];
 
@@ -1207,6 +1251,7 @@ async function listPackages(
             highlightedOnly: highlightedOnly || undefined,
             executesCode: executesCode.value,
             capabilityTag,
+            category,
             viewerUserId: viewerUserId ?? undefined,
             paginationOpts: { cursor: pageCursor, numItems },
           });
@@ -1271,8 +1316,8 @@ async function listPackages(
 
   if (!effectiveFamily && options?.pluginFamilies?.length) {
     const decodedCursor = decodePluginCatalogCursor(cursor);
-    const codePluginSource = initCatalogSource(decodedCursor.codePlugins);
-    const bundlePluginSource = initCatalogSource(decodedCursor.bundlePlugins);
+    const codePluginSource = initCatalogSource<CatalogListItem>(decodedCursor.codePlugins);
+    const bundlePluginSource = initCatalogSource<CatalogListItem>(decodedCursor.bundlePlugins);
     const pageSize = limit;
     const items: CatalogListItem[] = [];
     const fetchPluginPage = async (
@@ -1291,6 +1336,7 @@ async function listPackages(
         highlightedOnly: highlightedOnly || undefined,
         executesCode: executesCode.value,
         capabilityTag,
+        category,
         viewerUserId: viewerUserId ?? undefined,
         paginationOpts: { cursor: pageCursor, numItems },
       });
@@ -1359,6 +1405,7 @@ async function listPackages(
     highlightedOnly: highlightedOnly || undefined,
     executesCode: executesCode.value,
     capabilityTag,
+    category,
     viewerUserId: viewerUserId ?? undefined,
     paginationOpts: { cursor, numItems: limit },
   } satisfies PackageListQueryArgs);
@@ -2090,8 +2137,19 @@ async function searchPackages(
   const executesCode = parseBooleanQueryParam(url.searchParams, "executesCode");
   if (!executesCode.ok) return text(executesCode.message, 400, rate.headers);
   const highlightedOnly = featured.value === true || highlightedOnlyParam.value === true;
+  const category = url.searchParams.get("category")?.trim() || undefined;
+  if (category && !isPluginCategorySlug(category)) {
+    return text("Invalid plugin category", 400, rate.headers);
+  }
   const family = familyParam.value;
   const includeSkills = options?.includeSkills ?? family === undefined;
+  if (category && (family === "skill" || (!family && includeSkills))) {
+    return text(
+      "Plugin category is only supported for plugin package endpoints",
+      400,
+      rate.headers,
+    );
+  }
 
   let results: CatalogSearchEntry[];
   if (family === "skill") {
@@ -2121,6 +2179,7 @@ async function searchPackages(
             highlightedOnly: highlightedOnly || undefined,
             executesCode: executesCode.value,
             capabilityTag,
+            category,
             viewerUserId: viewerUserId ?? undefined,
           }),
         ),
@@ -2146,6 +2205,7 @@ async function searchPackages(
         highlightedOnly: highlightedOnly || undefined,
         executesCode: executesCode.value,
         capabilityTag,
+        category,
         viewerUserId: viewerUserId ?? undefined,
       });
     }
@@ -2159,6 +2219,7 @@ async function searchPackages(
         highlightedOnly: highlightedOnly || undefined,
         executesCode: executesCode.value,
         capabilityTag,
+        category,
         viewerUserId: viewerUserId ?? undefined,
       }),
       runQueryRef<CatalogSearchEntry[]>(ctx, apiRefs.skills.searchPackageCatalogPublic, {
