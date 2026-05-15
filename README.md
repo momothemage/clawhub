@@ -108,7 +108,7 @@ bun run dev
 # detached/Codex worktree preview
 bun run dev:worktree
 
-# optional: seed local skills, plugins, and scanner fixtures
+# seed local QA fixtures and the public corpus
 bun run seed:dev
 ```
 

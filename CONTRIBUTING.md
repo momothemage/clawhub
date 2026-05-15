@@ -82,18 +82,14 @@ Change the port if 3000 is already in use, and update `SITE_URL` in both `.env.l
 
 ### Seed the database
 
-Populate shared `@local` sample skills, plugins, and scanner fixtures so the UI is not empty:
+Populate local QA fixtures and the committed public corpus so the UI isn't empty:
 
 ```bash
-bun run seed:dev
-```
+# local moderation/security fixtures
+bunx convex run --no-push devSeed:seedLocalFixtures
 
-The script waits for the local Convex deployment, runs the fixture seed, and refreshes global stats.
-If you need to run the pieces manually:
-
-```bash
-# Skills, plugins, and moderation/scanner fixtures
-bunx convex run --no-push devSeed:seedNixSkills
+# real-ish public corpus rows under deterministic dummy accounts
+bun run seed:public-corpus
 
 # 50 extra skills for pagination testing (optional)
 bunx convex run --no-push devSeedExtra:seedExtraSkillsInternal
@@ -105,8 +101,8 @@ bunx convex run --no-push statsMaintenance:updateGlobalStatsAction
 To reset and re-seed:
 
 ```bash
-bunx convex run --no-push devSeed:seedNixSkills '{"reset": true}'
-bunx convex run --no-push statsMaintenance:updateGlobalStatsAction
+bunx convex run --no-push devSeed:seedLocalFixtures '{"reset": true}'
+bun run seed:public-corpus -- --reset
 ```
 
 ### Optional environment variables
