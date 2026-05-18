@@ -401,7 +401,6 @@ function buildScannerModerationPatchFromVersion(params: {
     hiddenAt: moderationStatus === "hidden" ? params.now : undefined,
     hiddenBy: undefined,
     lastReviewedAt: moderationStatus === "hidden" ? params.now : undefined,
-    updatedAt: params.now,
   };
 }
 
@@ -418,13 +417,17 @@ function applySkillManualOverrideToSkillPatch(params: {
   skill: Pick<Doc<"skills">, "manualOverride">;
   basePatch: SkillModerationPatch;
   now: number;
+  stripUpdatedAt?: boolean;
 }) {
   if (!params.skill.manualOverride) return params.basePatch;
-  return applyManualOverrideToSkillPatch({
+  const patch = applyManualOverrideToSkillPatch({
     basePatch: params.basePatch,
     override: params.skill.manualOverride,
     now: params.now,
   });
+  if (!params.stripUpdatedAt) return patch;
+  const { updatedAt: _updatedAt, ...timestampFreePatch } = patch;
+  return timestampFreePatch;
 }
 
 async function patchStructuredModerationFromVersion(
@@ -445,13 +448,11 @@ async function patchStructuredModerationFromVersion(
     skill,
     basePatch,
     now,
+    stripUpdatedAt: true,
   });
 
   const nextSkill = { ...skill, ...patch };
-  await ctx.db.patch(skill._id, {
-    ...patch,
-    updatedAt: now,
-  });
+  await ctx.db.patch(skill._id, patch);
   await adjustGlobalPublicCountForSkillChange(ctx, skill, nextSkill);
 }
 const TRUSTED_PUBLISHER_SKILL_THRESHOLD = 10;
@@ -637,6 +638,7 @@ async function syncSkillModerationFromLatestVersion(
     skill,
     basePatch,
     now,
+    stripUpdatedAt: true,
   });
 
   const nextSkill = { ...skill, ...patch };
@@ -5935,11 +5937,9 @@ export const updateSkillVersionStaticScanInternal = internalMutation({
     });
     const patch = applySkillManualOverrideToSkillPatch({
       skill,
-      basePatch: {
-        ...basePatch,
-        updatedAt: now,
-      },
+      basePatch,
       now,
+      stripUpdatedAt: true,
     });
     const nextSkill = { ...skill, ...patch };
     await ctx.db.patch(skill._id, patch);
@@ -7011,12 +7011,12 @@ export const approveSkillByHashInternal = internalMutation({
         unpublishedSlugReleasedAt: undefined,
         unpublishedOriginalSlug: undefined,
         lastReviewedAt: nextModerationStatus === "hidden" ? now : undefined,
-        updatedAt: now,
       };
       const patch = applySkillManualOverrideToSkillPatch({
         skill,
         basePatch,
         now,
+        stripUpdatedAt: true,
       });
       const nextSkill = { ...skill, ...patch };
       await ctx.db.patch(skill._id, patch);
@@ -7108,7 +7108,6 @@ export const escalateByVtInternal = internalMutation({
       moderationEngineVersion: snapshot.engineVersion,
       moderationEvaluatedAt: snapshot.evaluatedAt,
       moderationSourceVersionId: version._id,
-      updatedAt: now,
     };
     if (bypassSuspicious) {
       basePatch.moderationReason = normalizeScannerSuspiciousReason(
@@ -7160,6 +7159,7 @@ export const escalateByVtInternal = internalMutation({
       skill,
       basePatch,
       now,
+      stripUpdatedAt: true,
     });
     const nextSkill = { ...skill, ...patch };
     await ctx.db.patch(skill._id, patch);
