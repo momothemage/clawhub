@@ -1,5 +1,6 @@
 import { api } from "../../convex/_generated/api";
 import { convexHttp } from "../convex/client";
+import { fetchCatalogDiscoveryCapabilities } from "./catalogDiscoveryCapabilities";
 import { getSkillCategoriesForSkill } from "./categories";
 import { fetchPluginCatalog, type PackageListItem } from "./packageApi";
 import type { PublicSkill, PublicUser } from "./publicUser";
@@ -51,6 +52,7 @@ export const HOME_LISTING_PAGE_SIZE = 20;
 export const HOME_NEW_WINDOW_MS = 14 * 24 * 60 * 60 * 1_000;
 
 const PLUGIN_CATALOG_PAGE_LIMIT = 100;
+const LEGACY_NEW_PLUGIN_MAX_REQUESTS = 10;
 // Featured is intentionally a finite editorial feed: the latest 40 badge-history rows.
 const FEATURED_SKILL_LIMIT = 40;
 
@@ -102,6 +104,18 @@ export async function fetchHomeSkillListing(
   signal?: AbortSignal,
 ) {
   if (tab === "trending") {
+    const capabilities = await fetchCatalogDiscoveryCapabilities();
+    if (!capabilities.canonicalTrendingEnabled) {
+      const result = await convexHttp.query(api.skills.listPublicTrendingPage, {
+        limit: numItems,
+        categorySlug: categorySlugs.length === 1 ? categorySlugs[0] : undefined,
+      });
+      const page = ((result as { items?: HomeNativeSkillListingEntry[] }).items ?? []).filter(
+        (entry) => skillMatchesAnyHomeCategory(entry.skill, categorySlugs),
+      );
+      return { page, hasMore: false };
+    }
+
     const items: HomeTrendingSkillListingEntry[] = [];
     let cursor: string | null = null;
     let hasMore = false;
@@ -123,6 +137,9 @@ export async function fetchHomeSkillListing(
 
   // highlightedOnly is a dedicated backend path ordered by skillBadges.by_kind_at;
   // the nominal sort below is ignored for Featured and never chooses its candidate set.
+  const capabilities =
+    tab === "new" ? await fetchCatalogDiscoveryCapabilities() : { apiVersion: 1 as const };
+  const newestCutoff = Date.now() - HOME_NEW_WINDOW_MS;
   const requestLimit = tab === "featured" ? FEATURED_SKILL_LIMIT : numItems;
   const categoriesToFetch = categorySlugs.length > 0 ? categorySlugs : [null];
   const results = await Promise.all(
@@ -139,16 +156,29 @@ export async function fetchHomeSkillListing(
           dir: "desc",
           highlightedOnly: tab === "featured" ? true : undefined,
           officialOnly: tab === "official" ? true : undefined,
-          createdAfter: tab === "new" ? Date.now() - HOME_NEW_WINDOW_MS : undefined,
+          ...(tab === "new" && capabilities.apiVersion >= 1 ? { createdAfter: newestCutoff } : {}),
           categorySlug: categorySlug ?? undefined,
         });
-        const resultPage = ((result as { page?: HomeNativeSkillListingEntry[] }).page ?? []).filter(
-          (entry) => skillMatchesAnyHomeCategory(entry.skill, categorySlugs),
+        const transportPage = (result as { page?: HomeNativeSkillListingEntry[] }).page ?? [];
+        const resultPage = transportPage.filter(
+          (entry) =>
+            skillMatchesAnyHomeCategory(entry.skill, categorySlugs) &&
+            (tab !== "new" ||
+              capabilities.apiVersion >= 1 ||
+              entry.skill.createdAt >= newestCutoff),
         );
         page.push(...resultPage);
 
         const nextCursor = (result as { nextCursor?: string | null }).nextCursor ?? null;
         hasMore = Boolean((result as { hasMore?: boolean }).hasMore ?? nextCursor);
+        if (
+          tab === "new" &&
+          capabilities.apiVersion === 0 &&
+          transportPage.some((entry) => entry.skill.createdAt < newestCutoff)
+        ) {
+          hasMore = false;
+          break;
+        }
         if (!nextCursor || nextCursor === cursor) break;
         cursor = nextCursor;
       }
@@ -188,6 +218,55 @@ export async function fetchHomePluginListing(
   const categoriesToFetch = categorySlugs.length > 0 ? categorySlugs : [null];
   const newestCutoff = Date.now() - HOME_NEW_WINDOW_MS;
   if (tab === "new") {
+    const capabilities = await fetchCatalogDiscoveryCapabilities();
+    if (capabilities.apiVersion === 0) {
+      const results = await Promise.all(
+        categoriesToFetch.map(async (categorySlug) => {
+          const items: PackageListItem[] = [];
+          let cursor: string | null | undefined;
+          let hasMore = false;
+          for (
+            let requestIndex = 0;
+            requestIndex < LEGACY_NEW_PLUGIN_MAX_REQUESTS && items.length < limit;
+            requestIndex += 1
+          ) {
+            const result = await fetchPluginCatalog({
+              category: categorySlug ?? undefined,
+              cursor: cursor ?? undefined,
+              sort: "updated",
+              limit: PLUGIN_CATALOG_PAGE_LIMIT,
+              signal,
+            });
+            const reachedCutoff = result.items.some((item) => item.updatedAt < newestCutoff);
+            items.push(
+              ...result.items.filter(
+                (item) =>
+                  item.createdAt >= newestCutoff && itemMatchesAnyHomeCategory(item, categorySlugs),
+              ),
+            );
+            hasMore = !reachedCutoff && result.nextCursor !== null;
+            if (
+              reachedCutoff ||
+              !result.nextCursor ||
+              result.nextCursor === cursor ||
+              items.length >= limit
+            ) {
+              break;
+            }
+            cursor = result.nextCursor;
+          }
+          return { items, hasMore };
+        }),
+      );
+      const items = uniqueHomePlugins(results.flatMap((result) => result.items)).sort(
+        (left, right) => right.createdAt - left.createdAt,
+      );
+      return {
+        items: items.slice(0, limit),
+        hasMore: items.length > limit || results.some((result) => result.hasMore),
+      };
+    }
+
     const results = await Promise.all(
       categoriesToFetch.map(async (categorySlug) => {
         const page: PackageListItem[] = [];

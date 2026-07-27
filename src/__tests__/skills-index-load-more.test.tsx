@@ -12,6 +12,7 @@ import {
 
 const navigateMock = vi.fn();
 const fetchCanonicalTrendingPageMock = vi.fn();
+const fetchCatalogDiscoveryCapabilitiesMock = vi.fn();
 let searchMock: Record<string, unknown> = {};
 
 vi.mock("../lib/trendingApi", async (importOriginal) => {
@@ -21,6 +22,11 @@ vi.mock("../lib/trendingApi", async (importOriginal) => {
     fetchCanonicalTrendingPage: (...args: unknown[]) => fetchCanonicalTrendingPageMock(...args),
   };
 });
+
+vi.mock("../lib/catalogDiscoveryCapabilities", () => ({
+  fetchCatalogDiscoveryCapabilities: (...args: unknown[]) =>
+    fetchCatalogDiscoveryCapabilitiesMock(...args),
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   createFileRoute: () => (_config: { component: unknown; validateSearch: unknown }) => ({
@@ -54,6 +60,11 @@ describe("SkillsIndex load-more observer", () => {
     searchMock = {};
     setupDefaultConvexReactMocks();
     fetchCanonicalTrendingPageMock.mockReset();
+    fetchCatalogDiscoveryCapabilitiesMock.mockReset();
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 1,
+      canonicalTrendingEnabled: true,
+    });
   });
 
   afterEach(() => {

@@ -30,6 +30,9 @@ describe("getPublicCapabilitiesHandler", () => {
 
     await expect(getPublicCapabilitiesHandler({ db } as never, {})).resolves.toEqual({
       environment: "unknown",
+      catalogDiscovery: {
+        apiVersion: 1,
+      },
       skillsSh: {
         mode: "off",
         runtimeEnabled: false,
@@ -66,6 +69,9 @@ describe("getPublicCapabilitiesHandler", () => {
       }),
     ).resolves.toEqual({
       environment: "test",
+      catalogDiscovery: {
+        apiVersion: 1,
+      },
       skillsSh: {
         mode: "test",
         runtimeEnabled: true,

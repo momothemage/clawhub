@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const convexQueryMock = vi.fn();
 const fetchPluginCatalogMock = vi.fn();
+const fetchCatalogDiscoveryCapabilitiesMock = vi.fn();
 
 vi.mock("../convex/client", () => ({
   convexHttp: {
@@ -20,6 +21,11 @@ vi.mock("../../convex/_generated/api", () => ({
 
 vi.mock("./packageApi", () => ({
   fetchPluginCatalog: (...args: unknown[]) => fetchPluginCatalogMock(...args),
+}));
+
+vi.mock("./catalogDiscoveryCapabilities", () => ({
+  fetchCatalogDiscoveryCapabilities: (...args: unknown[]) =>
+    fetchCatalogDiscoveryCapabilitiesMock(...args),
 }));
 
 import {
@@ -42,6 +48,11 @@ describe("homeListingData", () => {
   beforeEach(() => {
     convexQueryMock.mockReset();
     fetchPluginCatalogMock.mockReset();
+    fetchCatalogDiscoveryCapabilitiesMock.mockReset();
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 1,
+      canonicalTrendingEnabled: true,
+    });
     convexQueryMock.mockResolvedValue({
       page: [
         {

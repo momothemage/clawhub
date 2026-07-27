@@ -3,6 +3,7 @@ import { useAction } from "convex/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { api } from "../../../convex/_generated/api";
 import { convexHttp } from "../../convex/client";
+import { fetchCatalogDiscoveryCapabilities } from "../../lib/catalogDiscoveryCapabilities";
 import {
   ALL_CATEGORY_KEYWORDS,
   getSkillCategoryBySlug,
@@ -174,18 +175,38 @@ export function useSkillsBrowseModel({
       let consecutiveEmptyPages = 0;
       try {
         if (catalogTab === "trending") {
-          const result = await fetchCanonicalTrendingPage({
-            cursor: pageCursor,
+          const capabilities = await fetchCatalogDiscoveryCapabilities();
+          if (capabilities.canonicalTrendingEnabled) {
+            const result = await fetchCanonicalTrendingPage({
+              cursor: pageCursor,
+              limit: pageSize,
+            });
+            if (generation !== fetchGeneration.current) return;
+            const entries = result.items.map((trending) => ({ trending }));
+            setListResults((prev) => (cursor ? [...prev, ...entries] : entries));
+            setListCursor(result.nextCursor);
+            setListAutoLoadPaused(false);
+            setListStatus(result.nextCursor ? "idle" : "done");
+            return;
+          }
+
+          const result = await convexHttp.query(api.skills.listPublicTrendingPage, {
             limit: pageSize,
+            categorySlug: activeCategory?.slug,
+            topic: activeTopic,
           });
           if (generation !== fetchGeneration.current) return;
-          const entries = result.items.map((trending) => ({ trending }));
-          setListResults((prev) => (cursor ? [...prev, ...entries] : entries));
-          setListCursor(result.nextCursor);
+          const entries = (result as { items: SkillListEntry[] }).items;
+          setListResults(entries);
+          setListCursor(null);
           setListAutoLoadPaused(false);
-          setListStatus(result.nextCursor ? "idle" : "done");
+          setListStatus("done");
           return;
         }
+        const capabilities =
+          catalogTab === "new"
+            ? await fetchCatalogDiscoveryCapabilities()
+            : { apiVersion: 1 as const };
         while (true) {
           const result = await convexHttp.query(api.skills.listPublicPageV4, {
             cursor: pageCursor ?? undefined,
@@ -194,7 +215,9 @@ export function useSkillsBrowseModel({
             dir,
             highlightedOnly: catalogTab === "featured" ? true : undefined,
             officialOnly: catalogTab === "official" ? true : undefined,
-            createdAfter: catalogTab === "new" ? newCutoff : undefined,
+            ...(catalogTab === "new" && capabilities.apiVersion >= 1
+              ? { createdAfter: newCutoff }
+              : {}),
             categorySlug: activeCategory?.slug,
             topic: activeTopic,
             ...(activeCategory && catalogTab !== "new" && catalogTab !== "official"
@@ -204,8 +227,17 @@ export function useSkillsBrowseModel({
             excludeCategoryKeywords,
           });
           if (generation !== fetchGeneration.current) return;
+          const visiblePage =
+            catalogTab === "new" && capabilities.apiVersion === 0
+              ? result.page.filter((entry) => entry.skill.createdAt >= newCutoff)
+              : result.page;
+          const reachedLegacyNewCutoff =
+            catalogTab === "new" &&
+            capabilities.apiVersion === 0 &&
+            result.page.some((entry) => entry.skill.createdAt < newCutoff);
           const nextCursor =
             catalogTab !== "featured" &&
+            !reachedLegacyNewCutoff &&
             result.hasMore &&
             result.nextCursor != null &&
             result.nextCursor !== pageCursor
@@ -213,7 +245,7 @@ export function useSkillsBrowseModel({
               : null;
 
           // Filtered scans can yield empty transport pages before reaching visible results.
-          if (result.page.length === 0 && nextCursor) {
+          if (visiblePage.length === 0 && nextCursor) {
             consecutiveEmptyPages += 1;
             if (consecutiveEmptyPages < maxConsecutiveEmptyPagesPerFetch) {
               pageCursor = nextCursor;
@@ -221,9 +253,9 @@ export function useSkillsBrowseModel({
             }
           }
 
-          setListResults((prev) => (cursor ? [...prev, ...result.page] : result.page));
+          setListResults((prev) => (cursor ? [...prev, ...visiblePage] : visiblePage));
           setListCursor(nextCursor);
-          setListAutoLoadPaused(result.page.length === 0 && Boolean(nextCursor));
+          setListAutoLoadPaused(visiblePage.length === 0 && Boolean(nextCursor));
           setListStatus(nextCursor ? "idle" : "done");
           return;
         }

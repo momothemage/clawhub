@@ -11,8 +11,14 @@ import {
 } from "./helpers/convexReactMocks";
 
 const navigateMock = vi.fn();
+const fetchCatalogDiscoveryCapabilitiesMock = vi.fn();
 let searchMock: Record<string, unknown> = {};
 let loaderDataMock: unknown = null;
+
+vi.mock("../lib/catalogDiscoveryCapabilities", () => ({
+  fetchCatalogDiscoveryCapabilities: (...args: unknown[]) =>
+    fetchCatalogDiscoveryCapabilitiesMock(...args),
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   createFileRoute: () => (config: { component: unknown; validateSearch: unknown }) => ({
@@ -49,6 +55,11 @@ describe("SkillsIndex", () => {
     searchMock = { tab: "new" };
     loaderDataMock = null;
     setupDefaultConvexReactMocks();
+    fetchCatalogDiscoveryCapabilitiesMock.mockReset();
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 1,
+      canonicalTrendingEnabled: true,
+    });
   });
 
   afterEach(() => {

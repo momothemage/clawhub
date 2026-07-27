@@ -20,6 +20,9 @@ export async function getPublicCapabilitiesHandler(
   );
   return {
     environment: runtime.environment,
+    catalogDiscovery: {
+      apiVersion: 1,
+    },
     skillsSh: {
       mode: runtime.skillsSh.mode,
       runtimeEnabled: runtime.skillsSh.runtimeEnabled,

@@ -12,6 +12,7 @@ import {
 
 const navigateMock = vi.fn();
 const fetchCanonicalTrendingPageMock = vi.fn();
+const fetchCatalogDiscoveryCapabilitiesMock = vi.fn();
 let searchMock: Record<string, unknown> = {};
 let loaderDataMock: unknown = null;
 
@@ -22,6 +23,11 @@ vi.mock("../lib/trendingApi", async (importOriginal) => {
     fetchCanonicalTrendingPage: (...args: unknown[]) => fetchCanonicalTrendingPageMock(...args),
   };
 });
+
+vi.mock("../lib/catalogDiscoveryCapabilities", () => ({
+  fetchCatalogDiscoveryCapabilities: (...args: unknown[]) =>
+    fetchCatalogDiscoveryCapabilitiesMock(...args),
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   createFileRoute: () => (config: { component: unknown; validateSearch: unknown }) => ({
@@ -60,6 +66,11 @@ describe("SkillsIndex", () => {
     setupDefaultConvexReactMocks();
     fetchCanonicalTrendingPageMock.mockReset();
     fetchCanonicalTrendingPageMock.mockResolvedValue(canonicalPage([]));
+    fetchCatalogDiscoveryCapabilitiesMock.mockReset();
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 1,
+      canonicalTrendingEnabled: true,
+    });
   });
 
   afterEach(() => {
@@ -123,6 +134,26 @@ describe("SkillsIndex", () => {
     expect(screen.queryByText(/Not scanned by ClawHub/i)).toBeNull();
   });
 
+  it("renders legacy Trending while the canonical rollout is disabled", async () => {
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 0,
+      canonicalTrendingEnabled: false,
+    });
+    convexHttpMock.query.mockResolvedValue({
+      items: [makeListResult("legacy-trending", "Legacy Trending")],
+      nextCursor: null,
+    });
+
+    render(<SkillsIndex />);
+
+    expect(await screen.findByText("Legacy Trending")).toBeTruthy();
+    expect(fetchCanonicalTrendingPageMock).not.toHaveBeenCalled();
+    expect(convexHttpMock.query).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ limit: 20 }),
+    );
+  });
+
   it("loads New from the native 14-day chronological feed", async () => {
     searchMock = { tab: "new" };
     convexHttpMock.query.mockResolvedValue({
@@ -148,6 +179,29 @@ describe("SkillsIndex", () => {
     expect(Date.now() - Number(args.createdAfter)).toBeLessThanOrEqual(
       14 * 24 * 60 * 60 * 1000 + 1000,
     );
+  });
+
+  it("uses the legacy New contract and applies the 14-day cutoff locally", async () => {
+    searchMock = { tab: "new" };
+    const recent = makeListResult("recent", "Recent Skill");
+    const old = makeListResult("old", "Old Skill");
+    old.skill.createdAt = Date.now() - 15 * 24 * 60 * 60 * 1_000;
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 0,
+      canonicalTrendingEnabled: false,
+    });
+    convexHttpMock.query.mockResolvedValue({
+      page: [recent, old],
+      hasMore: true,
+      nextCursor: "must-not-scan",
+    });
+
+    render(<SkillsIndex />);
+
+    expect(await screen.findByText("Recent Skill")).toBeTruthy();
+    expect(screen.queryByText("Old Skill")).toBeNull();
+    expect(getLastListPageArgs()).not.toHaveProperty("createdAfter");
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
   it("loads the latest 40 Featured skills from editorial history", async () => {

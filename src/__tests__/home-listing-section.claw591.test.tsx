@@ -7,6 +7,7 @@ const convexQueryMock = vi.fn();
 const convexActionMock = vi.fn();
 const fetchPluginCatalogMock = vi.fn();
 const fetchCanonicalTrendingPageMock = vi.fn();
+const fetchCatalogDiscoveryCapabilitiesMock = vi.fn();
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({
@@ -44,6 +45,11 @@ vi.mock("../lib/packageApi", () => ({
   fetchPluginCatalog: (...args: unknown[]) => fetchPluginCatalogMock(...args),
 }));
 
+vi.mock("../lib/catalogDiscoveryCapabilities", () => ({
+  fetchCatalogDiscoveryCapabilities: (...args: unknown[]) =>
+    fetchCatalogDiscoveryCapabilitiesMock(...args),
+}));
+
 vi.mock("../lib/trendingApi", async (importOriginal) => {
   const original = await importOriginal<typeof import("../lib/trendingApi")>();
   return {
@@ -61,6 +67,11 @@ describe("HomeListingSection", () => {
     convexActionMock.mockReset();
     fetchPluginCatalogMock.mockReset();
     fetchCanonicalTrendingPageMock.mockReset();
+    fetchCatalogDiscoveryCapabilitiesMock.mockReset();
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 1,
+      canonicalTrendingEnabled: true,
+    });
     convexQueryMock.mockResolvedValue({ page: [], hasMore: false, nextCursor: null });
     convexActionMock.mockResolvedValue([]);
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });

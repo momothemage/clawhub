@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const convexQueryMock = vi.fn();
 const fetchPluginCatalogMock = vi.fn();
 const fetchCanonicalTrendingPageMock = vi.fn();
+const fetchCatalogDiscoveryCapabilitiesMock = vi.fn();
 
 vi.mock("../convex/client", () => ({
   convexHttp: { query: (...args: unknown[]) => convexQueryMock(...args) },
@@ -11,12 +12,20 @@ vi.mock("../convex/client", () => ({
 vi.mock("../../convex/_generated/api", () => ({
   api: {
     packages: { listPublicNewPluginsPage: "packages:listPublicNewPluginsPage" },
-    skills: { listPublicPageV4: "skills:listPublicPageV4" },
+    skills: {
+      listPublicPageV4: "skills:listPublicPageV4",
+      listPublicTrendingPage: "skills:listPublicTrendingPage",
+    },
   },
 }));
 
 vi.mock("./packageApi", () => ({
   fetchPluginCatalog: (...args: unknown[]) => fetchPluginCatalogMock(...args),
+}));
+
+vi.mock("./catalogDiscoveryCapabilities", () => ({
+  fetchCatalogDiscoveryCapabilities: (...args: unknown[]) =>
+    fetchCatalogDiscoveryCapabilitiesMock(...args),
 }));
 
 vi.mock("./trendingApi", async (importOriginal) => {
@@ -40,6 +49,11 @@ describe("homeListingData", () => {
     convexQueryMock.mockReset();
     fetchPluginCatalogMock.mockReset();
     fetchCanonicalTrendingPageMock.mockReset();
+    fetchCatalogDiscoveryCapabilitiesMock.mockReset();
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 1,
+      canonicalTrendingEnabled: true,
+    });
     convexQueryMock.mockResolvedValue({ page: [], hasMore: false, nextCursor: null });
     fetchPluginCatalogMock.mockResolvedValue({ items: [], nextCursor: null });
     fetchCanonicalTrendingPageMock.mockResolvedValue(canonicalPage([], null));
@@ -83,6 +97,25 @@ describe("homeListingData", () => {
     });
   });
 
+  it("falls back to legacy Trending when the canonical rollout is disabled", async () => {
+    const legacy = makeNative("legacy-trending", Date.now(), 10);
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 0,
+      canonicalTrendingEnabled: false,
+    });
+    convexQueryMock.mockResolvedValue({ items: [legacy], nextCursor: null });
+
+    await expect(fetchHomeSkillListing("trending", [], HOME_LISTING_PAGE_SIZE)).resolves.toEqual({
+      page: [legacy],
+      hasMore: false,
+    });
+    expect(convexQueryMock).toHaveBeenCalledWith("skills:listPublicTrendingPage", {
+      limit: HOME_LISTING_PAGE_SIZE,
+      categorySlug: undefined,
+    });
+    expect(fetchCanonicalTrendingPageMock).not.toHaveBeenCalled();
+  });
+
   it("loads New from the native 14-day chronological feed", async () => {
     const now = Date.now();
     await fetchHomeSkillListing("new", [], HOME_LISTING_PAGE_SIZE);
@@ -98,6 +131,29 @@ describe("homeListingData", () => {
     );
     const args = convexQueryMock.mock.calls[0]?.[1] as { createdAfter: number };
     expect(now - args.createdAfter).toBeGreaterThanOrEqual(HOME_NEW_WINDOW_MS - 10);
+  });
+
+  it("omits new-only arguments and filters the cutoff against a legacy backend", async () => {
+    const now = Date.now();
+    const recent = makeNative("recent", now - 1_000, 0);
+    const old = makeNative("old", now - HOME_NEW_WINDOW_MS - 1, 0);
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 0,
+      canonicalTrendingEnabled: false,
+    });
+    convexQueryMock.mockResolvedValue({
+      page: [recent, old],
+      hasMore: true,
+      nextCursor: "must-not-scan",
+    });
+
+    const result = await fetchHomeSkillListing("new", [], HOME_LISTING_PAGE_SIZE);
+
+    expect(result).toEqual({ page: [recent], hasMore: false });
+    expect(convexQueryMock).toHaveBeenCalledWith(
+      "skills:listPublicPageV4",
+      expect.not.objectContaining({ createdAfter: expect.any(Number) }),
+    );
   });
 
   it("requests the latest 40 Featured skills and preserves editorial order", async () => {
@@ -198,6 +254,29 @@ describe("homeListingData", () => {
     );
     expect(fetchPluginCatalogMock).not.toHaveBeenCalled();
     expect(result.hasMore).toBe(false);
+  });
+
+  it("falls back to the legacy plugin catalog and applies the creation cutoff locally", async () => {
+    const now = Date.now();
+    const recent = makePlugin("recent", now - 1_000, now - 100);
+    const old = makePlugin("old", now - HOME_NEW_WINDOW_MS - 1, now - 200);
+    fetchCatalogDiscoveryCapabilitiesMock.mockResolvedValue({
+      apiVersion: 0,
+      canonicalTrendingEnabled: false,
+    });
+    fetchPluginCatalogMock.mockResolvedValue({
+      items: [old, recent],
+      nextCursor: null,
+    });
+
+    await expect(fetchHomePluginListing("new", [], 20)).resolves.toEqual({
+      items: [recent],
+      hasMore: false,
+    });
+    expect(fetchPluginCatalogMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sort: "updated", limit: 100 }),
+    );
+    expect(convexQueryMock).not.toHaveBeenCalled();
   });
 
   it("keeps the New plugin continuation after filling the visible window", async () => {
