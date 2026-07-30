@@ -44,6 +44,9 @@ export type ClaimedJob = {
       contentType?: string;
     }>;
     clawpackUrl?: string | null;
+    release?: Record<string, unknown> & {
+      artifactKind?: "legacy-zip" | "npm-pack";
+    };
   };
 };
 
@@ -769,11 +772,15 @@ export async function writeArtifactWorkspace(job: ClaimedJob, workspace: string)
     await writeFile(out, bytes);
   }
 
-  if (job.target.clawpackUrl) {
+  // Legacy ZIP releases are already materialized above as individually verified files.
+  // Their archival copy is not an npm tarball and makes GNU tar fail before scanning.
+  const clawpackUrl =
+    job.target.release?.artifactKind === "legacy-zip" ? null : job.target.clawpackUrl;
+  if (clawpackUrl) {
     const tarballPath = join(workspace, "artifact.tgz");
     await writeFile(
       tarballPath,
-      await download(job.target.clawpackUrl, { kind: "clawpack", path: "artifact.tgz" }),
+      await download(clawpackUrl, { kind: "clawpack", path: "artifact.tgz" }),
     );
     const listing = await runCommand("tar", ["-tzf", tarballPath], {
       cwd: workspace,

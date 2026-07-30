@@ -1,4 +1,5 @@
 /* @vitest-environment node */
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -490,6 +491,43 @@ describe("run-codex-scan-worker diagnostics", () => {
       "echo ready\n",
     );
     expect(await readFile(join(workspace, "artifact", "EMPTY"))).toHaveLength(0);
+  });
+
+  it("does not extract legacy ZIP archives after materializing verified files", async () => {
+    const workspace = await tempDir();
+    const manifest = '{"id":"demo-plugin"}\n';
+
+    await writeArtifactWorkspace(
+      {
+        job: {
+          _id: "job-legacy-zip",
+          hasMaliciousSignal: false,
+          leaseToken: "lease-secret",
+          source: "pre-publication",
+          targetKind: "packageRelease",
+          waitForVtUntil: 0,
+        },
+        target: {
+          files: [
+            {
+              path: "openclaw.plugin.json",
+              sha256: createHash("sha256").update(manifest).digest("hex"),
+              size: Buffer.byteLength(manifest),
+              url: `data:text/plain,${encodeURIComponent(manifest)}`,
+            },
+          ],
+          clawpackUrl: "data:application/zip;base64,bm90LWFuLWFyY2hpdmU=",
+          release: {
+            artifactKind: "legacy-zip",
+          },
+        },
+      },
+      workspace,
+    );
+
+    expect(await readFile(join(workspace, "artifact", "openclaw.plugin.json"), "utf8")).toBe(
+      manifest,
+    );
   });
 
   it("omits signed artifact URLs from download failure errors", async () => {
