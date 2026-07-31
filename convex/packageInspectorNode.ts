@@ -1,6 +1,6 @@
 "use node";
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { v } from "convex/values";
@@ -42,6 +42,9 @@ type InspectorReport = {
 };
 
 const AUTHOR_REMEDIATION_DOCS_BASE = "https://docs.openclaw.ai/clawhub/plugin-validation-fixes";
+const PACKAGE_INSPECTOR_TEMP_PREFIX = "clawhub-plugin-inspector-";
+const SERVERLESS_TEMP_DIR = "/tmp";
+const TEMP_DIR_FALLBACK_ERROR_CODES = new Set(["EACCES", "ENOENT", "ENOTDIR", "EPERM", "EROFS"]);
 
 const LEGACY_AUTHOR_REMEDIATION_SUMMARIES = {
   "channel-env-vars":
@@ -144,6 +147,27 @@ export function buildPublishInspectorRunCheckOptions(root: string, generatedAt: 
   };
 }
 
+export async function createPackageInspectorWorkspace(
+  preferredTempDir = tmpdir(),
+  createTempDir: (prefix: string) => Promise<string> = mkdtemp,
+) {
+  try {
+    return await createTempDir(path.join(preferredTempDir, PACKAGE_INSPECTOR_TEMP_PREFIX));
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+    if (
+      process.platform === "win32" ||
+      path.resolve(preferredTempDir) === SERVERLESS_TEMP_DIR ||
+      typeof code !== "string" ||
+      !TEMP_DIR_FALLBACK_ERROR_CODES.has(code)
+    ) {
+      throw error;
+    }
+    return await createTempDir(path.join(SERVERLESS_TEMP_DIR, PACKAGE_INSPECTOR_TEMP_PREFIX));
+  }
+}
+
 export const runPackageInspectorForPublishInternal = internalAction({
   args: {
     packageName: v.string(),
@@ -163,12 +187,9 @@ export const runPackageInspectorForPublishInternal = internalAction({
     metadata: inspectorMetadataValidator,
   }),
   handler: async (ctx, args) => {
-    const root = path.join(
-      tmpdir(),
-      `clawhub-plugin-inspector-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    );
+    let root: string | undefined;
     try {
-      await mkdir(root, { recursive: true });
+      root = await createPackageInspectorWorkspace();
       for (const file of args.files) {
         const blob = await ctx.storage.get(file.storageId);
         if (!blob) {
@@ -209,7 +230,9 @@ export const runPackageInspectorForPublishInternal = internalAction({
         },
       };
     } finally {
-      await rm(root, { recursive: true, force: true });
+      if (root) {
+        await rm(root, { recursive: true, force: true });
+      }
     }
   },
 });
