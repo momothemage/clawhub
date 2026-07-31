@@ -1,18 +1,26 @@
 /* @vitest-environment node */
 
-import { describe, expect, it } from "vitest";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildPublishInspectorRunCheckOptions,
   createPackageInspectorWorkspace,
   normalizeInspectorReportForPublish,
 } from "./packageInspectorNode";
 
+const originalPlatform = process.platform;
+
+afterEach(() => {
+  Object.defineProperty(process, "platform", { value: originalPlatform });
+});
+
 describe("package inspector publish normalization", () => {
   it("falls back to /tmp when the configured temp directory is unavailable", async () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
     const attemptedPrefixes: string[] = [];
     const createTempDir = async (prefix: string) => {
       attemptedPrefixes.push(prefix);
-      if (prefix.startsWith("/home/sbx_user1051/")) {
+      if (attemptedPrefixes.length === 1) {
         throw Object.assign(new Error("configured temp directory is unavailable"), {
           code: "ENOENT",
         });
@@ -22,11 +30,23 @@ describe("package inspector publish normalization", () => {
 
     await expect(
       createPackageInspectorWorkspace("/home/sbx_user1051", createTempDir),
-    ).resolves.toBe("/tmp/clawhub-plugin-inspector-workspace");
+    ).resolves.toBe(path.join("/tmp", "clawhub-plugin-inspector-workspace"));
     expect(attemptedPrefixes).toEqual([
-      "/home/sbx_user1051/clawhub-plugin-inspector-",
-      "/tmp/clawhub-plugin-inspector-",
+      path.join("/home/sbx_user1051", "clawhub-plugin-inspector-"),
+      path.join("/tmp", "clawhub-plugin-inspector-"),
     ]);
+  });
+
+  it("does not use the POSIX fallback on Windows", async () => {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    const error = Object.assign(new Error("configured temp directory is unavailable"), {
+      code: "ENOENT",
+    });
+    const createTempDir = async () => {
+      throw error;
+    };
+
+    await expect(createPackageInspectorWorkspace("C:\\Temp", createTempDir)).rejects.toBe(error);
   });
 
   it("does not hide unrelated workspace creation errors", async () => {
