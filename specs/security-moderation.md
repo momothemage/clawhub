@@ -273,6 +273,9 @@ See also: [acceptable-usage.md](./acceptable-usage.md) for the marketplace polic
 - The server creates a short-lived, user-bound ticket before accepting a file.
   The upload action enforces the declared path, byte size, content type, and
   SHA-256 before attaching the resulting storage id to that ticket.
+- Storage metadata SHA-256 values may be hex or base64 depending on the Convex
+  runtime. Attachment validation compares the decoded digest bytes while the
+  ticket and public publish contract remain canonical lowercase hex.
 - JSON skill publishes must present the matching ticket for every staged file.
   Ticket ownership and file metadata are revalidated, and ticket consumption is
   committed atomically with the new skill version.
