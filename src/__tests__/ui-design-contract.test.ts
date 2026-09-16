@@ -172,6 +172,17 @@ describe("restored UI design contract", () => {
     );
   });
 
+  it("keeps metric headers visible when responsive category columns collapse", () => {
+    const css = styles();
+
+    for (const query of ["(max-width: 960px)", "(max-width: 760px)"]) {
+      const responsive = cssMediaContaining(css, query, [
+        ".browse-page .browse-list-head-category",
+      ]);
+      expect(responsive).not.toContain(".browse-page .browse-list-head-label:nth-of-type(3)");
+    }
+  });
+
   it("keeps dashboard package names inside their rows and attention cards", () => {
     const css = styles();
 
@@ -189,6 +200,19 @@ describe("restored UI design contract", () => {
 
     expect(cliBand).toContain("width: 100vw");
     expect(cliBand).toContain("max-width: none");
+  });
+
+  it("uses a dedicated hero image in light mode", () => {
+    const css = styles();
+
+    expect(existsSync(join(root, "public/home-hero-claw-light.webp"))).toBe(true);
+    expect(cssRule(css, '[data-theme-resolved="light"] .home-v2-hero-bg')).toContain("opacity: 1");
+    expect(cssRule(css, '[data-theme-resolved="light"] .home-v2-hero-bg::before')).toContain(
+      'background-image: url("/home-hero-claw-light.webp")',
+    );
+    expect(cssRule(css, '[data-theme-resolved="light"] .home-v2-hero-bg::before')).toContain(
+      "filter: none",
+    );
   });
 
   it("keeps browse segmented labels stable across active state changes", () => {
@@ -446,12 +470,21 @@ describe("restored UI design contract", () => {
       ".home-v2-listing-primary {",
       ".home-v2-listing-actions {",
     ]);
-    expect(mobileCatalog).toMatch(/\.home-v2-listing-toolbar \{[^}]*flex-direction:\s*column/s);
-    expect(mobileCatalog).toMatch(/\.home-v2-listing-primary \{[^}]*flex-direction:\s*column/s);
+    expect(mobileCatalog).toMatch(/\.home-v2-listing-toolbar \{[^}]*display:\s*grid/s);
+    expect(mobileCatalog).toMatch(
+      /\.home-v2-listing-toolbar \{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\) auto/s,
+    );
+    expect(mobileCatalog).toMatch(/\.home-v2-listing-primary \{[^}]*display:\s*contents/s);
     expect(mobileCatalog).toMatch(
       /\.home-v2-listing-primary > \.browse-controls-divider \{[^}]*display:\s*none/s,
     );
-    expect(mobileCatalog).toMatch(/\.home-v2-listing-actions \{[^}]*width:\s*100%/s);
+    expect(mobileCatalog).toMatch(/\.home-v2-listing-actions \{[^}]*display:\s*contents/s);
+    expect(mobileCatalog).toMatch(
+      /\.home-v2-listing-actions \.browse-search-trigger \{[^}]*grid-column:\s*3[^}]*grid-row:\s*1/s,
+    );
+    expect(mobileCatalog).toMatch(
+      /\.home-v2-listing-sort \{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*grid-row:\s*2/s,
+    );
     expect(cssRule(css, ".home-v2-listing-row::before")).toContain("border-radius: 0");
   });
 

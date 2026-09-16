@@ -1,6 +1,7 @@
 /* @vitest-environment node */
 
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { type FunctionReference, getFunctionName } from "convex/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sha256Hex } from "./lib/clawpack";
 import { verifyOpenClawPublishAuthorization } from "./lib/openClawPublishAuthorization";
@@ -59,6 +60,7 @@ import {
   listPublicPage,
   listPublicNewPluginsPage,
   listPageForViewerInternal,
+  listPluginOverviewCategoryInternal,
   listVersions,
   listVersionsForViewerInternal,
   listVersionsForManager,
@@ -77,6 +79,7 @@ import {
   searchForViewerInternal,
   searchPublic,
 } from "./packages";
+import { runStaticPublishScanInternal } from "./staticPublishScanNode";
 
 vi.mock("@convex-dev/auth/server", () => ({
   getAuthUserId: vi.fn(),
@@ -216,6 +219,12 @@ const listPageForViewerInternalHandler = (
       isDone: boolean;
       continueCursor: string;
     }
+  >
+)._handler;
+const listPluginOverviewCategoryInternalHandler = (
+  listPluginOverviewCategoryInternal as unknown as WrappedHandler<
+    { category: string; numItems: number },
+    Array<{ name: string; isOfficial: boolean; stats?: { downloads: number } }>
   >
 )._handler;
 const listPluginExportPageInternalHandler = (
@@ -505,6 +514,47 @@ function makePackageManifestStorage() {
     ),
     store: vi.fn(async () => "storage:legacy-zip"),
   };
+}
+
+type PublishScanStorage = { storage: { get: (storageId: string) => Promise<Blob | null> } };
+
+// Convex rejects action arguments whose object keys start with `$` (package.json
+// `$schema` is the production case); mirror that rule so the mock fails the way
+// the real boundary would.
+function assertConvexValueKeys(value: unknown, path = "args"): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertConvexValueKeys(item, `${path}[${index}]`));
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, nested] of Object.entries(value)) {
+      if (key.startsWith("$")) {
+        throw new Error(`Field name ${key} at ${path} starts with a '$', which is reserved.`);
+      }
+      assertConvexValueKeys(nested, `${path}.${key}`);
+    }
+  }
+}
+
+type StaticScanHandler = (ctx: unknown, args: unknown) => Promise<unknown>;
+
+// Publish actions hop to the Node runtime for the moderation scan; run the real
+// action handler against the calling ctx's storage (`ctx.runAction(...)` binds
+// `this`) so scan verdicts stay observable, and answer every other action (the
+// package inspector) with the supplied result.
+function makePublishRunActionMock(
+  inspectorResult: () => unknown = makeCleanPackageInspectorResult,
+) {
+  return vi.fn(async function (this: PublishScanStorage, ref: unknown, args: unknown) {
+    const name = getFunctionName(ref as FunctionReference<"action">);
+    if (name === "staticPublishScanNode:runStaticPublishScanInternal") {
+      assertConvexValueKeys(args);
+      const handler = (runStaticPublishScanInternal as unknown as { _handler: StaticScanHandler })
+        ._handler;
+      return await handler(this, args);
+    }
+    return inspectorResult();
+  });
 }
 
 function makeCleanPackageInspectorResult() {
@@ -1129,6 +1179,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.mocked(getAuthUserId).mockReset();
   vi.mocked(getAuthUserId).mockResolvedValue(null);
 });
@@ -1360,6 +1412,7 @@ function makeDigestCtx(options: {
   }>;
   exactPackages?: Array<Record<string, unknown>>;
   exactDigests?: Array<Record<string, unknown>>;
+  officialDigests?: Array<Record<string, unknown>>;
   publisherDocs?: Record<string, Record<string, unknown>>;
   publisherMemberships?: Record<string, "owner" | "admin" | "publisher">;
   highlightedBadges?: Array<Record<string, unknown>>;
@@ -1574,6 +1627,9 @@ function makeDigestCtx(options: {
               withIndex: vi.fn(() => ({
                 order: vi.fn(() => ({
                   take: vi.fn().mockResolvedValue(options.highlightedBadges ?? []),
+                  async *[Symbol.asyncIterator]() {
+                    yield* options.highlightedBadges ?? [];
+                  },
                 })),
               })),
             };
@@ -1760,6 +1816,28 @@ function makeDigestCtx(options: {
                     take: vi.fn().mockResolvedValue(matches),
                   };
                 }
+                if (options.officialDigests !== undefined && indexName.includes("_official_")) {
+                  let family = "";
+                  const queryBuilder = {
+                    eq: (field: string, value: string | undefined) => {
+                      if (field === "family") family = value ?? "";
+                      return queryBuilder;
+                    },
+                    gte: () => queryBuilder,
+                    lt: () => queryBuilder,
+                  };
+                  builder?.(queryBuilder);
+                  const matches = (options.officialDigests ?? []).filter(
+                    (digest) => !family || digest.family === family,
+                  );
+                  return {
+                    take: vi.fn(async (limit: number) => matches.slice(0, limit)),
+                    order: vi.fn(() => ({
+                      paginate: getPaginate(table),
+                      take: vi.fn(async (limit: number) => matches.slice(0, limit)),
+                    })),
+                  };
+                }
                 if (indexName.includes("_family_")) {
                   indexNames.push(indexName);
                   let family = "";
@@ -1834,6 +1912,9 @@ function makeDigestCtx(options: {
               },
             };
           }
+          if (table === "officialPublishers") {
+            return { withIndex: () => ({ unique: async () => null }) };
+          }
           if (
             table !== "packageCapabilitySearchDigest" &&
             table !== "packageTopicSearchDigest" &&
@@ -1851,6 +1932,33 @@ function makeDigestCtx(options: {
                 lt: (field: string, value: string) => unknown;
               }) => unknown,
             ) => {
+              if (indexName.includes("_official_")) {
+                indexNames.push(indexName);
+                const filters: Array<{ field: string; value: unknown }> = [];
+                const queryBuilder = {
+                  eq: (field: string, value: unknown) => {
+                    filters.push({ field, value });
+                    return queryBuilder;
+                  },
+                  gte: () => queryBuilder,
+                  lt: () => queryBuilder,
+                };
+                builder?.(queryBuilder);
+                const takeRows = async (limit: number) => {
+                  take(limit);
+                  return (rowsByTable.get(table) ?? [])
+                    .filter((row) =>
+                      filters.every(({ field, value }) => readTestField(row, field) === value),
+                    )
+                    .slice(0, limit);
+                };
+                return {
+                  order: vi.fn(() => ({
+                    paginate: getPaginate(table),
+                    take: vi.fn(takeRows),
+                  })),
+                };
+              }
               if (indexName.includes("_family_")) {
                 indexNames.push(indexName);
                 let family = "";
@@ -2279,10 +2387,17 @@ function makeInsertReleaseCtx(
                   },
                 };
                 buildQuery?.(query);
-                if (indexName === "by_runtime_id") {
-                  const runtimeId = filters.get("runtimeId");
-                  const matches = runtimePackages.filter((pkg) => pkg.runtimeId === runtimeId);
+                if (
+                  indexName === "by_ownerUserId_ownerPublisherId_runtimeId_softDeletedAt" ||
+                  indexName === "by_ownerPublisherId_runtimeId_softDeletedAt"
+                ) {
+                  const matches = runtimePackages.filter((pkg) =>
+                    [...filters].every(([field, value]) => pkg[field] === value),
+                  );
                   return {
+                    async *[Symbol.asyncIterator]() {
+                      yield* matches;
+                    },
                     collect: vi.fn().mockResolvedValue(matches),
                     unique: vi.fn().mockResolvedValue(matches[0] ?? null),
                   };
@@ -2558,6 +2673,9 @@ function makeTransferPackageOwnerCtx(options?: {
               withIndex: vi.fn(() => ({
                 unique: vi.fn().mockResolvedValue(pkg),
                 collect: vi.fn().mockResolvedValue(pkg ? [pkg] : []),
+                async *[Symbol.asyncIterator]() {
+                  if (pkg) yield pkg;
+                },
               })),
             };
           }
@@ -2818,13 +2936,24 @@ function makePackageCtx(options: {
           if (table === "packageReleases") {
             const filteredVersionsPage = {
               ...versionsPage,
-              page: versionsPage.page.filter((release) => release.softDeletedAt === undefined),
+              page: versionsPage.page.filter(
+                (release) =>
+                  release.softDeletedAt === undefined &&
+                  release.ownerDeletedAt === undefined &&
+                  (release.publicationStatus === undefined ||
+                    release.publicationStatus === "published"),
+              ),
             };
             return {
               withIndex: vi.fn((indexName: string) => {
                 releaseIndexNames.push(indexName);
                 if (indexName === "by_package_active_created") {
                   return {
+                    filter: vi.fn(() => ({
+                      order: vi.fn(() => ({
+                        paginate: vi.fn().mockResolvedValue(filteredVersionsPage),
+                      })),
+                    })),
                     order: vi.fn(() => ({
                       paginate: vi.fn().mockResolvedValue(filteredVersionsPage),
                     })),
@@ -4511,7 +4640,7 @@ describe("packages public queries", () => {
     expect(result.page.map((entry) => entry.name)).toEqual(["public-plugin"]);
   });
 
-  it("allows owners to list their private packages", async () => {
+  it("excludes private packages from catalog pages even for owners", async () => {
     const { ctx } = makeDigestCtx({
       pages: [
         {
@@ -4533,7 +4662,7 @@ describe("packages public queries", () => {
       viewerUserId: "users:owner",
     });
 
-    expect(result.page.map((entry) => entry.name)).toEqual(["secret-plugin", "public-plugin"]);
+    expect(result.page.map((entry) => entry.name)).toEqual(["public-plugin"]);
   });
 
   it("keeps highlighted package pages in newest-featured order", async () => {
@@ -4631,7 +4760,7 @@ describe("packages public queries", () => {
     expect(result.page.map((entry) => entry.name)).toEqual(["public-plugin"]);
   });
 
-  it("lets legacy no-link personal package owners list private package digests", async () => {
+  it("excludes private catalog digests even for legacy personal owners", async () => {
     const { ctx } = makeDigestCtx({
       publisherDocs: {
         "publishers:legacy-personal": {
@@ -4663,10 +4792,7 @@ describe("packages public queries", () => {
       viewerUserId: "users:viewer",
     });
 
-    expect(result.page.map((entry) => entry.name)).toEqual([
-      "legacy-personal-secret",
-      "public-plugin",
-    ]);
+    expect(result.page.map((entry) => entry.name)).toEqual(["public-plugin"]);
   });
 
   it("does not let inactive no-link personal publishers expose private package digests", async () => {
@@ -4705,7 +4831,7 @@ describe("packages public queries", () => {
     expect(result.page.map((entry) => entry.name)).toEqual(["public-plugin"]);
   });
 
-  it("does not reuse legacy no-link personal access across package owners", async () => {
+  it("excludes all private catalog digests across legacy personal owners", async () => {
     const { ctx } = makeDigestCtx({
       publisherDocs: {
         "publishers:legacy-personal": {
@@ -4743,10 +4869,10 @@ describe("packages public queries", () => {
       viewerUserId: "users:viewer",
     });
 
-    expect(result.page.map((entry) => entry.name)).toEqual(["own-legacy-secret", "public-plugin"]);
+    expect(result.page.map((entry) => entry.name)).toEqual(["public-plugin"]);
   });
 
-  it("allows owners to filter to only their private packages", async () => {
+  it("allows owners to explicitly browse published private packages", async () => {
     const { ctx, indexNames } = makeDigestCtx({
       pages: [
         {
@@ -4776,7 +4902,7 @@ describe("packages public queries", () => {
     expect(indexNames).toEqual(["by_active_channel_updated"]);
   });
 
-  it("allows org collaborators to list their private packages", async () => {
+  it("excludes private packages from catalog pages even for org collaborators", async () => {
     const { ctx } = makeDigestCtx({
       pages: [
         {
@@ -4802,7 +4928,7 @@ describe("packages public queries", () => {
       viewerUserId: "users:member",
     });
 
-    expect(result.page.map((entry) => entry.name)).toEqual(["secret-plugin", "public-plugin"]);
+    expect(result.page.map((entry) => entry.name)).toEqual(["public-plugin"]);
   });
 
   it("applies isOfficial filtering even with family and channel set", async () => {
@@ -4951,7 +5077,7 @@ describe("packages public queries", () => {
     expect(result.map((entry) => entry.package.name)).toEqual(["youtube"]);
   });
 
-  it("allows owners to search their private packages", async () => {
+  it("allows owners to explicitly search published private packages", async () => {
     const { ctx } = makeDigestCtx({
       pages: [
         {
@@ -5123,8 +5249,14 @@ describe("packages public queries", () => {
     expect(result.map((entry) => entry.package.name)).toEqual(["react-exact"]);
   });
 
-  it("does not let official status make unrelated packages eligible for search", async () => {
+  it("does not let official or featured status make unrelated packages eligible for search", async () => {
+    const featured = makeDigest("featured-nostr", {
+      displayName: "Featured Nostr",
+      summary: "Protocol integration.",
+    });
     const { ctx } = makeDigestCtx({
+      highlightedBadges: [{ packageId: featured.packageId, at: 100 }],
+      exactDigests: [featured],
       pages: [
         {
           page: [
@@ -5133,6 +5265,7 @@ describe("packages public queries", () => {
               isOfficial: true,
               summary: "Protocol integration.",
             }),
+            featured,
           ],
           isDone: true,
           continueCursor: "",
@@ -5219,24 +5352,22 @@ describe("packages public queries", () => {
     expect(result).toEqual([]);
   });
 
-  it("orders lexical matches before summary-only matches without exposing rank metadata", async () => {
+  it("orders matching official packages before stronger community matches", async () => {
+    const community = makeDigest("email", {
+      displayName: "Email",
+      summary: "Mailbox tools.",
+    });
+    const agentMail = makeDigest("agentmail", {
+      displayName: "AgentMail",
+      isOfficial: true,
+      summary: "Official email plugin and email channel for OpenClaw.",
+      topics: ["email", "inbox"],
+    });
     const { ctx } = makeDigestCtx({
+      officialDigests: [agentMail],
       pages: [
         {
-          page: [
-            makeDigest("official-helper", {
-              displayName: "Official Helper",
-              isOfficial: true,
-              summary: "Ghost CMS integration.",
-              updatedAt: 100,
-            }),
-            makeDigest("ghost-tools", {
-              displayName: "Ghost Tools",
-              isOfficial: false,
-              summary: "CMS helper.",
-              updatedAt: 1,
-            }),
-          ],
+          page: [community],
           isDone: true,
           continueCursor: "",
         },
@@ -5244,16 +5375,45 @@ describe("packages public queries", () => {
     });
 
     const result = await searchPublicHandler(ctx, {
-      query: "ghost",
-      limit: 10,
+      query: "email",
+      limit: 2,
     });
 
-    expect(result.map((entry) => entry.package.name)).toEqual(["ghost-tools", "official-helper"]);
+    expect(result.map((entry) => entry.package.name)).toEqual(["agentmail", "email"]);
     expect(result[0]).not.toHaveProperty("rankTier");
     expect(result[0]).not.toHaveProperty("matchReason");
   });
 
-  it("allows org collaborators to search their private packages", async () => {
+  it("orders matching featured packages before stronger community matches", async () => {
+    const community = makeDigest("email", {
+      displayName: "Email",
+      summary: "Mailbox tools.",
+    });
+    const featured = makeDigest("agentmail", {
+      displayName: "AgentMail",
+      summary: "Email inboxes for agents.",
+    });
+    const { ctx } = makeDigestCtx({
+      highlightedBadges: [{ packageId: featured.packageId, at: 100 }],
+      exactDigests: [community, featured],
+      pages: [
+        {
+          page: [community, featured],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await searchPublicHandler(ctx, {
+      query: "email",
+      limit: 10,
+    });
+
+    expect(result.map((entry) => entry.package.name)).toEqual(["agentmail", "email"]);
+  });
+
+  it("allows org collaborators to explicitly search published private packages", async () => {
     const { ctx } = makeDigestCtx({
       pages: [
         {
@@ -5338,7 +5498,12 @@ describe("packages public queries", () => {
       ]),
     );
     expect(new Set(indexNames)).toEqual(
-      new Set(["by_active_topic_updated", "by_active_category_updated", "by_active_updated"]),
+      new Set([
+        "by_active_topic_updated",
+        "by_active_category_updated",
+        "by_active_official_updated",
+        "by_active_updated",
+      ]),
     );
   });
 
@@ -5929,10 +6094,11 @@ describe("packages public queries", () => {
           continueCursor: "",
         },
       ],
-      categoryRows: excludedCommunityDigests,
+      categoryRows: [officialDigest, ...excludedCommunityDigests],
     });
 
     const result = await listPublicPageHandler(ctx, {
+      family: "code-plugin",
       category: "security",
       officialFirst: true,
       excludedScanStatuses: ["pending"],
@@ -5942,7 +6108,8 @@ describe("packages public queries", () => {
     expect(result.page.map((entry) => entry.name)).toEqual(["official-security"]);
     expect(result.isDone).toBe(false);
     expect(result.continueCursor).toMatch(/^pkgofficialfirst:/);
-    expect(paginate).toHaveBeenCalledTimes(1);
+    expect(paginate).not.toHaveBeenCalled();
+    expect(take).toHaveBeenCalledTimes(2);
     expect(take).toHaveBeenCalledWith(200);
   });
 
@@ -5974,6 +6141,7 @@ describe("packages public queries", () => {
     });
 
     const result = await listPublicPageHandler(ctx, {
+      family: "code-plugin",
       category: "security",
       officialFirst: true,
       paginationOpts: { cursor: null, numItems: 3 },
@@ -5986,8 +6154,70 @@ describe("packages public queries", () => {
     ]);
     expect(result.isDone).toBe(true);
     expect(result.continueCursor).toBe("");
-    expect(paginate).toHaveBeenCalledTimes(1);
-    expect(take).toHaveBeenCalledTimes(1);
+    expect(paginate).not.toHaveBeenCalled();
+    expect(take).toHaveBeenCalledTimes(2);
+  });
+
+  it("fills overview shelves from bounded category indexes while Claws are disabled", async () => {
+    const previous = process.env.CLAWHUB_EXPERIMENTAL_CLAWS;
+    delete process.env.CLAWHUB_EXPERIMENTAL_CLAWS;
+    const genericNoise = Array.from({ length: 50 }, (_, index) =>
+      makeDigest(`generic-noise-${index}`, {
+        family: "code-plugin",
+        pluginCategoryTags: ["models"],
+        stats: { downloads: 1_000 - index, installs: 0, stars: 0, versions: 1 },
+      }),
+    );
+    const categoryRows = [
+      makeDigest("community-code", {
+        pluginCategory: "security",
+        pluginCategoryTags: ["security"],
+        stats: { downloads: 100, installs: 0, stars: 0, versions: 1 },
+      }),
+      makeDigest("official-code", {
+        isOfficial: true,
+        pluginCategory: "security",
+        pluginCategoryTags: ["security"],
+        stats: { downloads: 10, installs: 0, stars: 0, versions: 1 },
+      }),
+      makeDigest("official-bundle", {
+        family: "bundle-plugin",
+        isOfficial: true,
+        pluginCategory: "security",
+        pluginCategoryTags: ["security"],
+        stats: { downloads: 20, installs: 0, stars: 0, versions: 1 },
+      }),
+      makeDigest("community-bundle", {
+        family: "bundle-plugin",
+        pluginCategory: "security",
+        pluginCategoryTags: ["security"],
+        stats: { downloads: 200, installs: 0, stars: 0, versions: 1 },
+      }),
+    ];
+    const { ctx, indexNames, paginate, take } = makeDigestCtx({
+      pages: [{ page: genericNoise, isDone: false, continueCursor: "generic:later" }],
+      categoryRows,
+    });
+
+    try {
+      const result = await listPluginOverviewCategoryInternalHandler(ctx, {
+        category: "security",
+        numItems: 3,
+      });
+
+      expect(result.map((entry) => entry.name)).toEqual([
+        "official-bundle",
+        "official-code",
+        "community-bundle",
+      ]);
+      expect(indexNames).toEqual(Array(4).fill("by_active_family_official_category_downloads"));
+      expect(paginate).not.toHaveBeenCalled();
+      expect(take).toHaveBeenCalledTimes(4);
+      expect(take).toHaveBeenCalledWith(200);
+    } finally {
+      if (previous === undefined) delete process.env.CLAWHUB_EXPERIMENTAL_CLAWS;
+      else process.env.CLAWHUB_EXPERIMENTAL_CLAWS = previous;
+    }
   });
 
   it("keeps highlighted-only filtering while filling official-first category pages", async () => {
@@ -6082,6 +6312,7 @@ describe("packages public queries", () => {
     });
 
     const result = await listPublicPageHandler(ctx, {
+      family: "code-plugin",
       category: "security",
       officialFirst: true,
       paginationOpts: { cursor: null, numItems: 1 },
@@ -6090,8 +6321,8 @@ describe("packages public queries", () => {
     expect(result.page.map((entry) => entry.name)).toEqual(["official-security"]);
     expect(result.isDone).toBe(false);
     expect(result.continueCursor).toMatch(/^pkgofficialfirst:/);
-    expect(paginate).toHaveBeenCalledTimes(1);
-    expect(take).toHaveBeenCalledTimes(1);
+    expect(paginate).not.toHaveBeenCalled();
+    expect(take).toHaveBeenCalledTimes(2);
   });
 
   it("uses plugin category digests for category-filtered search", async () => {
@@ -6117,8 +6348,14 @@ describe("packages public queries", () => {
     });
 
     expect(result.map((entry) => entry.package.name)).toEqual(["api-demo"]);
-    expect(tableNames).toEqual(["packagePluginCategorySearchDigest"]);
-    expect(indexNames).toEqual(["by_active_category_updated"]);
+    expect(tableNames).toEqual([
+      "packagePluginCategorySearchDigest",
+      "packagePluginCategorySearchDigest",
+    ]);
+    expect(indexNames).toEqual([
+      "by_active_official_category_updated",
+      "by_active_category_updated",
+    ]);
   });
 
   it("uses topic digests for topic-filtered search", async () => {
@@ -6388,8 +6625,9 @@ describe("packages public queries", () => {
 
     expect(result).toEqual([]);
     expect(paginate).toHaveBeenCalledTimes(6);
-    expect(take).toHaveBeenCalledTimes(1);
+    expect(take).toHaveBeenCalledTimes(2);
     expect(take).toHaveBeenCalledWith(20);
+    expect(take).toHaveBeenCalledWith(200);
   });
 
   it("recalls exact author topics without an explicit topic filter", async () => {
@@ -6469,7 +6707,7 @@ describe("packages public queries", () => {
 
     expect(result).toEqual([]);
     expect(paginate).not.toHaveBeenCalled();
-    expect(take).toHaveBeenCalledTimes(3);
+    expect(take).toHaveBeenCalledTimes(4);
     expect(take).toHaveBeenCalledWith(20);
     expect(take).toHaveBeenCalledWith(50);
   });
@@ -6495,7 +6733,7 @@ describe("packages public queries", () => {
     });
 
     expect(result.map((entry) => entry.package.name)).toEqual(["demo-plugin"]);
-    expect(take).toHaveBeenCalledTimes(3);
+    expect(take).toHaveBeenCalledTimes(4);
     expect(ctx.db.query).toHaveBeenCalledWith("packageSearchDigest");
   });
 
@@ -6522,7 +6760,7 @@ describe("packages public queries", () => {
     });
 
     expect(result.map((entry) => entry.package.name)).toEqual(["runtime-demo"]);
-    expect(take).toHaveBeenCalledTimes(3);
+    expect(take).toHaveBeenCalledTimes(4);
     expect(ctx.db.query).toHaveBeenCalledWith("packageSearchDigest");
   });
 
@@ -6586,7 +6824,7 @@ describe("packages public queries", () => {
     });
 
     expect(result.map((entry) => entry.package.name)).toEqual(["demo-prefix"]);
-    expect(take).toHaveBeenCalledTimes(3);
+    expect(take).toHaveBeenCalledTimes(4);
     expect(ctx.db.query).toHaveBeenCalledWith("packageSearchDigest");
   });
 
@@ -6641,7 +6879,7 @@ describe("packages public queries", () => {
     });
 
     expect(result.map((entry) => entry.package.name)).toEqual(["alpha", "beta"]);
-    expect(take).toHaveBeenCalledTimes(3);
+    expect(take).toHaveBeenCalledTimes(4);
     expect(take).toHaveBeenCalledWith(20);
     expect(take).toHaveBeenCalledWith(50);
   });
@@ -6739,7 +6977,7 @@ describe("packages public queries", () => {
 
     expect(result).toEqual([]);
     expect(paginate).not.toHaveBeenCalled();
-    expect(take).toHaveBeenCalledTimes(3);
+    expect(take).toHaveBeenCalledTimes(4);
     expect(take).toHaveBeenCalledWith(20);
     expect(take).toHaveBeenCalledWith(200);
   });
@@ -7235,7 +7473,7 @@ describe("packages public queries", () => {
   });
 
   it("fills public package version pages after skipping pending releases", async () => {
-    const releases = [
+    const releases: Array<Record<string, unknown>> = [
       makeReleaseDoc({
         _id: "packageReleases:pending",
         version: "2.0.0",
@@ -7246,8 +7484,11 @@ describe("packages public queries", () => {
         version: "1.0.0",
       }),
     ];
-    const paginate = vi.fn(
+    const paginateUnfiltered = vi.fn(
       async ({ cursor, numItems }: { cursor: string | null; numItems: number }) => {
+        if (cursor !== null) {
+          throw new Error("A query can only invoke paginate once");
+        }
         const start = cursor ? Number(cursor) : 0;
         const page = releases.slice(start, start + numItems);
         const next = start + page.length;
@@ -7255,6 +7496,22 @@ describe("packages public queries", () => {
           page,
           isDone: next >= releases.length,
           continueCursor: next >= releases.length ? "" : String(next),
+        };
+      },
+    );
+    const paginatePublished = vi.fn(
+      async ({ cursor, numItems }: { cursor: string | null; numItems: number }) => {
+        const published = releases.filter(
+          (release) =>
+            release.publicationStatus === undefined || release.publicationStatus === "published",
+        );
+        const start = cursor ? Number(cursor) : 0;
+        const page = published.slice(start, start + numItems);
+        const next = start + page.length;
+        return {
+          page,
+          isDone: next >= published.length,
+          continueCursor: next >= published.length ? "" : String(next),
         };
       },
     );
@@ -7279,8 +7536,13 @@ describe("packages public queries", () => {
               withIndex: vi.fn((indexName: string) => {
                 releaseIndexNames.push(indexName);
                 return {
+                  filter: vi.fn(() => ({
+                    order: vi.fn(() => ({
+                      paginate: paginatePublished,
+                    })),
+                  })),
                   order: vi.fn(() => ({
-                    paginate,
+                    paginate: paginateUnfiltered,
                   })),
                 };
               }),
@@ -7301,9 +7563,14 @@ describe("packages public queries", () => {
       isDone: true,
       continueCursor: "",
     });
-    expect(paginate).toHaveBeenNthCalledWith(1, { cursor: null, numItems: 1 });
-    expect(paginate).toHaveBeenNthCalledWith(2, { cursor: "1", numItems: 1 });
-    expect(releaseIndexNames).toEqual(["by_package_active_created", "by_package_active_created"]);
+    expect(paginatePublished).toHaveBeenCalledTimes(1);
+    expect(paginatePublished).toHaveBeenCalledWith({
+      cursor: null,
+      numItems: 1,
+      maximumRowsRead: 6,
+    });
+    expect(paginateUnfiltered).not.toHaveBeenCalled();
+    expect(releaseIndexNames).toEqual(["by_package_active_created"]);
   });
 
   it("soft-deletes packages and active releases for the owner", async () => {
@@ -9899,7 +10166,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -10871,6 +11138,7 @@ describe("packages public queries", () => {
         }),
         store: vi.fn(async () => "storage:legacy-zip"),
       },
+      runAction: makePublishRunActionMock(),
     };
 
     try {
@@ -11044,6 +11312,7 @@ describe("packages public queries", () => {
         }),
         store: vi.fn(async () => "storage:legacy-zip"),
       },
+      runAction: makePublishRunActionMock(),
     };
 
     try {
@@ -11339,7 +11608,7 @@ describe("packages public queries", () => {
         })
         .mockResolvedValueOnce(null),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(async () => {}),
       },
@@ -11641,7 +11910,7 @@ describe("packages public queries", () => {
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -11773,7 +12042,7 @@ describe("packages public queries", () => {
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -11986,7 +12255,7 @@ describe("packages public queries", () => {
         .mockResolvedValueOnce(trustedPublisher)
         .mockResolvedValueOnce(null),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -12115,7 +12384,7 @@ describe("packages public queries", () => {
         .mockResolvedValueOnce(orphanRelease)
         .mockResolvedValueOnce(null),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -12224,7 +12493,7 @@ describe("packages public queries", () => {
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -12312,7 +12581,7 @@ describe("packages public queries", () => {
           }),
         ),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -12392,7 +12661,7 @@ describe("packages public queries", () => {
           status: "blocked",
         }),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -12477,7 +12746,7 @@ describe("packages public queries", () => {
         .mockResolvedValueOnce(trustedPublisher)
         .mockResolvedValueOnce(null),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -12556,7 +12825,7 @@ describe("packages public queries", () => {
         })
         .mockResolvedValueOnce(null),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -12712,7 +12981,7 @@ describe("packages public queries", () => {
           linkedUserId: "users:owner",
         }),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -12782,9 +13051,35 @@ describe("packages public queries", () => {
     );
   });
 
-  it("forwards only valid HTTPS plugin manifest icons to release insertion", async () => {
-    async function publishWithManifestIcon(icon: unknown) {
+  it("publishes model categories when omitted and preserves explicit manifest categories", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+    const modelFetch = vi.fn(async () =>
+      Response.json({
+        output: [
+          {
+            type: "message",
+            content: [
+              {
+                type: "output_text",
+                text: JSON.stringify({
+                  categories: ["scheduling"],
+                  evidence: "Manages appointments and availability.",
+                }),
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", modelFetch);
+    async function publishWithManifestIcon(
+      icon: unknown,
+      bundleManifest?: Record<string, unknown>,
+      declaredCategories?: string[],
+      portableIcon?: Uint8Array,
+    ) {
       const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+        if ("sha256" in args && "contentType" in args) return args;
         if (args.minimumRole === "publisher") {
           return { publisherId: "publishers:owner", linkedUserId: "users:owner" };
         }
@@ -12808,7 +13103,21 @@ describe("packages public queries", () => {
             },
           }),
         ],
-        ["storage:manifest", JSON.stringify({ id: "demo.plugin", icon })],
+        [
+          "storage:manifest",
+          JSON.stringify({
+            id: "demo.plugin",
+            icon,
+            categories: declaredCategories,
+            description: "Manages appointments and availability.",
+            contracts: { tools: ["demoTool"] },
+          }),
+        ],
+        ...(bundleManifest
+          ? ([["storage:bundle-manifest", JSON.stringify(bundleManifest)]] as Array<
+              [string, string]
+            >)
+          : []),
         ["storage:code", "export default {};"],
       ]);
       const ctx = {
@@ -12832,12 +13141,22 @@ describe("packages public queries", () => {
             linkedUserId: "users:owner",
           }),
         runMutation,
-        runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+        runAction: vi.fn(async function (
+          this: PublishScanStorage,
+          ref: FunctionReference<"action">,
+          args: unknown,
+        ) {
+          return getFunctionName(ref) === "skillPresentationImageNode:validateRasterInternal"
+            ? true
+            : makePublishRunActionMock().call(this, ref, args);
+        }),
         scheduler: {
           runAfter: vi.fn(),
         },
         storage: {
           get: vi.fn(async (storageId: string) => {
+            if (storageId === "storage:icon" && portableIcon)
+              return new Blob([new Uint8Array(portableIcon)]);
             const content = storedFiles.get(storageId);
             return content ? new Blob([content]) : null;
           }),
@@ -12850,7 +13169,7 @@ describe("packages public queries", () => {
         payload: {
           name: "demo-plugin",
           displayName: "Demo Plugin",
-          family: "code-plugin",
+          family: bundleManifest ? "bundle-plugin" : "code-plugin",
           version: "1.0.0",
           changelog: "init",
           source: {
@@ -12877,6 +13196,17 @@ describe("packages public queries", () => {
               sha256: "manifest",
               contentType: "application/json",
             },
+            ...(bundleManifest
+              ? [
+                  {
+                    path: ".codex-plugin/plugin.json",
+                    size: 1,
+                    storageId: "storage:bundle-manifest",
+                    sha256: "bundle-manifest",
+                    contentType: "application/json",
+                  },
+                ]
+              : []),
             {
               path: "dist/index.js",
               size: 1,
@@ -12884,6 +13214,17 @@ describe("packages public queries", () => {
               sha256: "code",
               contentType: "application/javascript",
             },
+            ...(portableIcon
+              ? [
+                  {
+                    path: "assets/icon.png",
+                    size: portableIcon.byteLength,
+                    storageId: "storage:icon",
+                    sha256: await sha256Hex(portableIcon),
+                    contentType: "application/octet-stream",
+                  },
+                ]
+              : []),
           ],
         },
       });
@@ -12898,11 +13239,67 @@ describe("packages public queries", () => {
       return insertCall?.[1] as Record<string, unknown>;
     }
 
+    const portableIcon = new Uint8Array(
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      ),
+    );
+    const hostedIcon = `/api/v1/skill-icons/${await sha256Hex(portableIcon)}`;
+    await expect(
+      publishWithManifestIcon(
+        "https://ignored.example/icon.png",
+        undefined,
+        undefined,
+        portableIcon,
+      ),
+    ).resolves.toMatchObject({ icon: hostedIcon, pluginManifestSummary: { icon: hostedIcon } });
+
     await expect(
       publishWithManifestIcon("https://cdn.example.test/icons/demo.svg"),
-    ).resolves.toMatchObject({ icon: "https://cdn.example.test/icons/demo.svg" });
+    ).resolves.toMatchObject({
+      categories: ["scheduling"],
+      pluginManifestSummary: { categories: ["scheduling"] },
+      categoryClassification: {
+        source: "generated",
+        evidence: "Manages appointments and availability.",
+      },
+    });
+    await expect(
+      publishWithManifestIcon(undefined, {
+        channels: ["whatsapp"],
+        providers: ["openrouter"],
+        kind: "memory",
+      }),
+    ).resolves.toMatchObject({
+      categories: ["scheduling"],
+      pluginManifestSummary: { categories: ["scheduling"] },
+    });
+
+    modelFetch.mockClear();
+    await expect(
+      publishWithManifestIcon(undefined, undefined, ["productivity"]),
+    ).resolves.toMatchObject({
+      categories: ["productivity"],
+      categoryClassification: { source: "manifest" },
+    });
+    for (const bundle of [undefined, { name: "Appointments" }]) {
+      await expect(
+        publishWithManifestIcon(undefined, bundle, ["productivity", "scheduling"]),
+      ).rejects.toThrow("exactly one category");
+    }
+    expect(modelFetch).not.toHaveBeenCalled();
+
+    modelFetch.mockImplementation(async () =>
+      Response.json({ error: "unavailable" }, { status: 503 }),
+    );
+    await expect(publishWithManifestIcon(undefined)).resolves.toMatchObject({
+      categories: ["other"],
+      categoryClassification: { source: "fallback" },
+    });
 
     for (const icon of [
+      "https://cdn.example.test/icons/demo.svg",
       "http://cdn.example.test/icons/demo.svg",
       "/icons/demo.svg",
       "not a url",
@@ -12910,7 +13307,9 @@ describe("packages public queries", () => {
       123,
       { src: "https://cdn.example.test/icons/demo.svg" },
     ]) {
-      await expect(publishWithManifestIcon(icon)).resolves.not.toHaveProperty("icon");
+      const published = await publishWithManifestIcon(icon);
+      expect(published).not.toHaveProperty("icon");
+      expect(published.pluginManifestSummary).not.toHaveProperty("icon");
     }
   });
 
@@ -12920,6 +13319,7 @@ describe("packages public queries", () => {
       [
         "storage:package",
         JSON.stringify({
+          $schema: "https://json.schemastore.org/package.json",
           name: "demo-plugin",
           keywords: [
             "one",
@@ -12982,7 +13382,7 @@ describe("packages public queries", () => {
         }),
         store: vi.fn(async () => "storage:legacy-zip"),
       },
-      runAction: vi.fn(async () => ({
+      runAction: makePublishRunActionMock(() => ({
         status: "pass",
         summary: {
           breakageCount: 0,
@@ -13054,7 +13454,10 @@ describe("packages public queries", () => {
     );
 
     expect(runMutation).toHaveBeenCalled();
-    expect(result.categories).toEqual(["other"]);
+    expect(result.categories).toEqual(["security"]);
+    expect(result.pluginManifestSummary).toEqual(
+      expect.objectContaining({ categories: ["security"] }),
+    );
     expect(result.topics).toBeUndefined();
     expect(result.sha256hash).toBe(expectedLegacyZipSha256);
     expect(result.verification).toEqual(expect.objectContaining({ scanStatus: "pending" }));
@@ -15539,7 +15942,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -15595,7 +15998,7 @@ describe("packages public queries", () => {
           linkedUserId: "users:vincent",
         }),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -15656,7 +16059,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -15706,7 +16109,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -15751,7 +16154,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -15797,7 +16200,7 @@ describe("packages public queries", () => {
           githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
         }),
       runMutation,
-      runAction: vi.fn(async () => makeCleanPackageInspectorResult()),
+      runAction: makePublishRunActionMock(),
       scheduler: {
         runAfter: vi.fn(),
       },
@@ -18503,6 +18906,7 @@ describe("package scan backfill", () => {
       _id: "packageReleases:demo-1",
       packageId: "packages:demo",
       version: "1.0.0",
+      runtimeId: "demo.plugin",
       distTags: [],
       verification: { scanStatus: "clean" },
       createdAt: 1_600_000_000_000,
@@ -18531,7 +18935,7 @@ describe("package scan backfill", () => {
       _id: "packages:demo",
       ownerUserId: "users:owner",
       ownerPublisherId: "publishers:org",
-      runtimeId: "malicious.plugin",
+      runtimeId: "demo.plugin",
       sourceRepo: "openclaw/demo-malicious",
       latestReleaseId: "packageReleases:demo-2",
       tags: { latest: "packageReleases:demo-2" },
@@ -18625,7 +19029,7 @@ describe("package scan backfill", () => {
       "packages:demo",
       expect.objectContaining({
         latestReleaseId: "packageReleases:demo-1",
-        runtimeId: undefined,
+        runtimeId: "demo.plugin",
         sourceRepo: undefined,
         scanStatus: "clean",
         tags: { latest: "packageReleases:demo-1" },

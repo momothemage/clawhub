@@ -29,9 +29,7 @@ describe("DetailSecuritySummary", () => {
     ).toBeNull();
     expect(screen.queryByText("Install from publishers you trust.")).toBeNull();
     expect(screen.queryByRole("link", { name: /VirusTotal/i })).toBeNull();
-    expect(
-      screen.queryByText("Security checks across malware telemetry and agentic risk"),
-    ).toBeNull();
+    expect(screen.queryByText("Security checks for vulnerabilities and agentic risk")).toBeNull();
     expect(document.querySelector(".security-audit-meter")?.getAttribute("data-level")).toBe("3");
     expect(document.querySelectorAll(".security-audit-meter span")).toHaveLength(3);
   });
@@ -48,18 +46,16 @@ describe("DetailSecuritySummary", () => {
     expect(document.querySelector(".security-audit-meter")?.getAttribute("data-level")).toBe("0");
   });
 
-  it("shows staff-cleared public scan summaries as cleared", () => {
+  it("shows suspicious version scans without a clearance path", () => {
     render(
       <DetailSecuritySummary
         auditHref="/suka233/kmind-markdown-to-mindmap/security-audit"
         vtAnalysis={{ status: "suspicious", verdict: "suspicious", checkedAt: 1 }}
         llmAnalysis={{ status: "suspicious", verdict: "suspicious", checkedAt: 1 }}
-        suppressScanResults
       />,
     );
 
-    expect(screen.getByText("Cleared")).toBeTruthy();
-    expect(screen.queryByText("Warn")).toBeNull();
+    expect(screen.getByText("Review")).toBeTruthy();
   });
 
   it("rolls ClawScan review and warning states into the compact verdict", () => {

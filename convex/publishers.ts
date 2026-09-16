@@ -8,6 +8,7 @@ import { assertAdmin, getOptionalActiveAuthUserId, requireUser } from "./lib/acc
 import { GITHUB_ORG_MEMBERSHIP_VERIFICATION_MAX_AGE_MS } from "./lib/githubOrgMemberships";
 import { isPublicSkillDoc } from "./lib/globalStats";
 import { isOfficialPublisher, toPublicPublisherWithOfficial } from "./lib/officialPublishers";
+import { assertPackageRuntimeIdAvailable } from "./lib/packageRuntimeIdentity";
 import { extractPackageDigestFields, upsertPackageSearchDigest } from "./lib/packageSearchDigest";
 import { isPackageBlockedFromPublic } from "./lib/packageSecurity";
 import { toPublicPublisher } from "./lib/public";
@@ -106,10 +107,7 @@ type PublisherCatalogItem = {
   inferredCategories?: string[];
   latestVersionId?: Id<"skillVersions">;
   inferredFromVersionId?: Id<"skillVersions">;
-  /**
-   * Legacy skill icon field or public plugin manifest HTTPS icon URL retained
-   * while older frontend bundles are cached.
-   */
+  /** Hosted bundled icon path; older records may retain legacy icon values. */
   icon: string | null;
   href: string;
   installs: number;
@@ -1572,6 +1570,16 @@ async function getPersonalPublisherRecoveryOwnerMigrationPlan(
     throw new ConvexError(
       `Publisher resource ${first.table}:${first.id} belongs to another user; manual reconciliation required`,
     );
+  }
+  for (const pkg of packages) {
+    if (pkg.family === "code-plugin" && !pkg.softDeletedAt) {
+      // Relinking a personal publisher merges its claims with the destination's legacy namespace.
+      await assertPackageRuntimeIdAvailable(ctx, {
+        ...pkg,
+        ownerUserId: nextUserId,
+        ownerPublisherId: undefined,
+      });
+    }
   }
   if (
     activeHandleReservation &&

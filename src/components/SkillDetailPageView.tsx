@@ -26,7 +26,6 @@ import { DetailHero, DetailPageShell, DETAIL_HERO_TOPIC_LIMIT } from "./DetailPa
 import { DetailSecuritySummaryLabel } from "./DetailSecuritySummary";
 import { useDownloadsSidebarMetricBlock } from "./DownloadsMetricCard";
 import { InlineCodeSummary } from "./InlineCodeSummary";
-import { MarketplaceIcon } from "./MarketplaceIcon";
 import { SidebarMetadata } from "./SidebarMetadata";
 import { buildSkillHref } from "./skillDetailUtils";
 import { SkillCommandLineCard } from "./SkillInstallSurface";
@@ -41,7 +40,6 @@ type SkillModerationInfo = {
   isSuspicious: boolean;
   isHiddenByMod: boolean;
   isRemoved: boolean;
-  overrideActive?: boolean;
   verdict?: "clean" | "suspicious" | "malicious";
   reason?: string;
 };
@@ -380,9 +378,8 @@ export function SkillDetailPageView({
             <div className="pending-banner-content">
               <strong>Security scan in progress</strong>
               <p>
-                Your skill is being scanned by VirusTotal. It will be visible to others once the
-                scan completes. This usually takes up to 5 minutes — grab a coffee or exfoliate your
-                shell while you wait.
+                Your skill is undergoing security checks. It will be visible to others once the
+                checks complete.
               </p>
             </div>
           </div>
@@ -500,15 +497,6 @@ export function SkillDetailPageView({
                     </div>
                   ) : null}
                   <div className="skill-hero-title-row">
-                    {skill.icon ? (
-                      <MarketplaceIcon
-                        kind="skill"
-                        label={displayName}
-                        imageUrl={skill.icon}
-                        skill={skill}
-                        size="md"
-                      />
-                    ) : null}
                     <h1 className="skill-page-title">{displayName}</h1>
                     {showTitleBadges ? (
                       <div className="skill-title-badges">

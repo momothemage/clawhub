@@ -694,7 +694,7 @@ describe("setSkillSoftDeletedInternal B1 undelete gate", () => {
     );
   });
 
-  it("allows admin to undelete moderator-hidden skill", async () => {
+  it("rejects admin restore when suspicious scanner state cannot be reconstructed", async () => {
     const skill = makeSkill({ moderationReason: "scanner.vt.suspicious" });
     const { ctx, patch } = makeCtx({
       skill,
@@ -707,15 +707,35 @@ describe("setSkillSoftDeletedInternal B1 undelete gate", () => {
         slug: "demo",
         deleted: false,
       }),
-    ).resolves.toEqual({ ok: true });
+    ).rejects.toThrow("scanner state cannot be reconstructed");
 
-    expect(patch).toHaveBeenCalledWith(
-      "skills:1",
-      expect.objectContaining({ moderationStatus: "active" }),
-    );
+    expect(patch).not.toHaveBeenCalled();
   });
 
-  it("lets moderators unhide scanner-blocked skills as a manual clean override", async () => {
+  it("rejects admin restore when a clean-looking skill references a missing scanner source", async () => {
+    const skill = makeSkill({
+      latestVersionId: "skillVersions:missing",
+      moderationStatus: "active",
+      moderationVerdict: "clean",
+      moderationReason: "manual.override.okay",
+    });
+    const { ctx, patch } = makeCtx({
+      skill,
+      actor: { _id: "users:admin", role: "admin" },
+    });
+
+    await expect(
+      setSkillSoftDeletedInternalHandler(ctx, {
+        userId: "users:admin",
+        slug: "demo",
+        deleted: false,
+      }),
+    ).rejects.toThrow("scanner state cannot be reconstructed");
+
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("does not let a moderator note clear a scanner malware block", async () => {
     const now = 1_700_000_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
     const skill = makeSkill({
@@ -741,41 +761,10 @@ describe("setSkillSoftDeletedInternal B1 undelete gate", () => {
         deleted: false,
         reason: "VT false positive; reanalysis clean",
       }),
-    ).resolves.toEqual({ ok: true });
+    ).rejects.toThrow("scanner state cannot be reconstructed");
 
-    expect(patch).toHaveBeenCalledWith(
-      "skills:1",
-      expect.objectContaining({
-        softDeletedAt: undefined,
-        moderationStatus: "active",
-        moderationReason: "manual.override.clean",
-        moderationFlags: undefined,
-        moderationVerdict: "clean",
-        moderationReasonCodes: undefined,
-        moderationEvidence: undefined,
-        moderationEngineVersion: undefined,
-        moderationSourceVersionId: undefined,
-        moderationNotes: "VT false positive; reanalysis clean",
-        hiddenAt: undefined,
-        hiddenBy: undefined,
-        manualOverride: expect.objectContaining({
-          verdict: "clean",
-          note: "VT false positive; reanalysis clean",
-          reviewerUserId: "users:mod",
-          updatedAt: now,
-        }),
-      }),
-    );
-    expect(insert).toHaveBeenCalledWith(
-      "auditLogs",
-      expect.objectContaining({
-        action: "skill.undelete",
-        metadata: expect.objectContaining({
-          reason: "VT false positive; reanalysis clean",
-          actorRole: "moderator",
-        }),
-      }),
-    );
+    expect(patch).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
   });
 
   it("still allows owner to soft-delete (deleted=true) their own skill regardless of gate", async () => {

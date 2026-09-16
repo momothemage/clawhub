@@ -64,7 +64,7 @@ const featuredPlugin = {
   channel: "community" as const,
   isOfficial: false,
   summary: "Runs workflows.",
-  icon: "https://example.com/demo-plugin.png",
+  icon: `/api/v1/skill-icons/${"a".repeat(64)}`,
   createdAt: 1,
   updatedAt: 2,
   latestVersion: "1.0.0",
@@ -153,6 +153,8 @@ describe("HomeListingSection", () => {
     expect(divider?.nextElementSibling?.contains(catalogTabs)).toBe(true);
     expect(primary?.lastElementChild?.contains(catalogTabs)).toBe(true);
     expect(toolbar?.lastElementChild?.classList.contains("home-v2-listing-actions")).toBe(true);
+    const searchPanel = document.querySelector(".browse-search-panel");
+    expect(toolbar?.nextElementSibling).toBe(searchPanel);
     expect(Array.from(contentTypeButtons, (button) => button.textContent)).toEqual([
       "Skills",
       "Plugins",
@@ -184,6 +186,13 @@ describe("HomeListingSection", () => {
         ?.getAttribute("src"),
     ).toBe(featuredPlugin.icon);
     expect(document.querySelector(".home-v2-listing-row-stats svg")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Search catalog" }));
+    const searchInput = screen.getByRole("searchbox", { name: "Search plugins" });
+    await waitFor(() => expect(document.activeElement).toBe(searchInput));
+    expect(searchPanel?.hasAttribute("hidden")).toBe(false);
+    expect(searchPanel?.contains(searchInput)).toBe(true);
+    expect(screen.getByRole("button", { name: "Close search" })).toBeTruthy();
   });
 
   it("keeps the initial Skills skeleton iconless", () => {
@@ -195,6 +204,40 @@ describe("HomeListingSection", () => {
     expect(loadingResults.querySelector(".browse-results-skeleton-icon")).toBeNull();
     expect(loadingResults.querySelector(".browse-list-head-icon-spacer")).toBeNull();
     expect(loadingResults.querySelectorAll(".skill-list-item-no-icon")).toHaveLength(6);
+  });
+
+  it("counts settled shelf input once while excluding switches, pagination, and repeat whitespace", async () => {
+    convexActionMock.mockResolvedValue(
+      Array.from({ length: 20 }, (_, i) => ({
+        skill: {
+          _id: `skills:${i}`,
+          slug: `result-${i}`,
+          displayName: `Result ${i}`,
+          stats: { downloads: 1 },
+        },
+      })),
+    );
+    renderSkillsListing();
+    fireEvent.click(screen.getByRole("button", { name: "Search catalog" }));
+    const input = screen.getByRole("searchbox", { name: "Search skills" });
+    fireEvent.change(input, { target: { value: "l" } });
+    fireEvent.change(input, { target: { value: "local" } });
+    expect(convexActionMock).not.toHaveBeenCalled();
+    await screen.findByText("Result 0");
+    expect(convexActionMock.mock.calls.filter(([, args]) => args.searchSource)).toHaveLength(1);
+    fireEvent.change(input, { target: { value: "local " } });
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await waitFor(() => expect(convexActionMock).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("tab", { name: "Official" }));
+    await waitFor(() => expect(convexActionMock).toHaveBeenCalledTimes(3));
+    fireEvent.click(screen.getByRole("combobox", { name: "Category" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Development" }));
+    await waitFor(() => expect(convexActionMock).toHaveBeenCalledTimes(4));
+    expect(convexActionMock.mock.calls.filter(([, args]) => args.searchSource)).toHaveLength(1);
+    fireEvent.change(input, { target: { value: "pending" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Featured" }));
+    await waitFor(() => expect(convexActionMock).toHaveBeenCalledTimes(5));
+    expect(convexActionMock.mock.calls.filter(([, args]) => args.searchSource)).toHaveLength(1);
   });
 
   it("searches skills within the selected tab and category", async () => {
@@ -225,6 +268,7 @@ describe("HomeListingSection", () => {
     await waitFor(() => {
       expect(convexActionMock).toHaveBeenCalledWith("search:searchNativeSkills", {
         query: "development",
+        searchSource: "clawhub-web",
         limit: 20,
         highlightedOnly: true,
         categorySlug: "development",

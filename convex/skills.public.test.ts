@@ -1502,6 +1502,7 @@ describe("skill artifact moderation", () => {
 
   it("can restore a skill while accepting an appeal", async () => {
     const skill = makeSkill({
+      latestVersionId: "skillVersions:1",
       softDeletedAt: 123,
       moderationStatus: "hidden",
       moderationReason: "scanner.llm.suspicious",
@@ -1526,6 +1527,18 @@ describe("skill artifact moderation", () => {
               };
             }
             if (id === "skills:1") return skill;
+            if (id === "skillVersions:1") {
+              return {
+                _id: id,
+                version: "1.0.0",
+                llmAnalysis: {
+                  status: "clean",
+                  verdict: "clean",
+                  summary: "No suspicious behavior found.",
+                  checkedAt: 10,
+                },
+              };
+            }
             return null;
           }),
           patch,
@@ -1570,10 +1583,14 @@ describe("skill artifact moderation", () => {
       expect.objectContaining({
         softDeletedAt: undefined,
         moderationStatus: "active",
-        moderationReason: "manual.override.clean",
+        moderationReason: "scanner.llm.clean",
         moderationFlags: undefined,
       }),
     );
+    const restoredSkillPatch = (
+      patch.mock.calls as unknown as Array<[string, Record<string, unknown>]>
+    ).find(([id]) => id === "skills:1")?.[1];
+    expect(restoredSkillPatch).not.toHaveProperty("manualOverride");
     expect(insert).toHaveBeenCalledWith(
       "auditLogs",
       expect.objectContaining({

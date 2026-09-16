@@ -1,6 +1,7 @@
 const { lstatSync, readFileSync } = require("node:fs");
 
 const MAX_JSON_BYTES = 8 * 1024;
+const MAX_PARENT_RECEIPT_BYTES = 64 * 1024;
 const POSITIVE_INTEGER_PATTERN = /^[1-9][0-9]*$/;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA_PATTERN = /^[a-f0-9]{40}$/;
@@ -65,6 +66,8 @@ const RECOVERY_RECEIPT_KEYS = [
   "actor",
   "approvalJob",
   "authorizationRoute",
+  "authorizedChildRunAttempt",
+  "authorizedChildRunId",
   "environment",
   "kind",
   "parentRunAttempt",
@@ -94,12 +97,12 @@ function requireMatchingRef(ref, fullRef, name) {
   }
 }
 
-function parseExactJson(raw, { name, keys, version }) {
+function parseExactJson(raw, { name, keys, version, maxBytes = MAX_JSON_BYTES }) {
   if (typeof raw !== "string" || !raw.trim()) {
     fail(`${name} JSON is required`);
   }
-  if (Buffer.byteLength(raw, "utf8") > MAX_JSON_BYTES) {
-    fail(`${name} JSON exceeds the 8 KiB limit`);
+  if (Buffer.byteLength(raw, "utf8") > maxBytes) {
+    fail(`${name} JSON exceeds the ${maxBytes / 1024} KiB limit`);
   }
 
   let value;
@@ -192,6 +195,7 @@ function parseParentAuthorizationReceipt(raw) {
     name: "release parent authorization receipt",
     keys: PARENT_RECEIPT_KEYS,
     version: 2,
+    maxBytes: MAX_PARENT_RECEIPT_BYTES,
   });
   const receipt = {
     version: 2,
@@ -288,10 +292,20 @@ function parseRecoveryApprovalReceipt(raw) {
   const value = parseExactJson(raw, {
     name: "recovery environment approval receipt",
     keys: RECOVERY_RECEIPT_KEYS,
-    version: 1,
+    version: 2,
   });
   const receipt = {
-    version: 1,
+    version: 2,
+    authorizedChildRunId: requireString(
+      value.authorizedChildRunId,
+      "recovery receipt authorizedChildRunId",
+      POSITIVE_INTEGER_PATTERN,
+    ),
+    authorizedChildRunAttempt: requireString(
+      value.authorizedChildRunAttempt,
+      "recovery receipt authorizedChildRunAttempt",
+      POSITIVE_INTEGER_PATTERN,
+    ),
     kind: requireString(value.kind, "recovery receipt kind"),
     repository: requireString(value.repository, "recovery receipt repository", REPOSITORY_PATTERN),
     workflow: requireString(value.workflow, "recovery receipt workflow", WORKFLOW_PATTERN),
@@ -392,8 +406,8 @@ function validateWorkflowRun(identity, run, actor) {
   }
 }
 
-function parentArtifactName(identity) {
-  return `${PARENT_RECEIPT_KIND}-v2-${identity.parentRunId}-${identity.parentRunAttempt}-${identity.runId}-${identity.runAttempt}`;
+function parentArtifactName(identity, child = identity) {
+  return `${PARENT_RECEIPT_KIND}-v2-${identity.parentRunId}-${identity.parentRunAttempt}-${child.runId}-${child.runAttempt}`;
 }
 
 function recoveryArtifactName(identity) {
@@ -423,7 +437,7 @@ function validateArtifactResponse(response, { headSha, name, runId }) {
   }
 }
 
-function validateParentAuthorizationReceipt(identity, receipt) {
+function validateParentAuthorizationReceipt(identity, receipt, child = identity) {
   const checks = [
     ["repository", receipt.repository, identity.parentRepository],
     ["workflow", receipt.workflow, identity.parentWorkflow],
@@ -434,8 +448,8 @@ function validateParentAuthorizationReceipt(identity, receipt) {
     ["head SHA", receipt.headSha, identity.toolingSha],
     ["child repository", receipt.childRepository, identity.repository],
     ["child workflow", receipt.childWorkflow, identity.workflow],
-    ["child run id", receipt.childRunId, identity.runId],
-    ["child run attempt", receipt.childRunAttempt, identity.runAttempt],
+    ["child run id", receipt.childRunId, child.runId],
+    ["child run attempt", receipt.childRunAttempt, child.runAttempt],
     ["child ref", receipt.childRef, identity.ref],
     ["child full ref", receipt.childFullRef, identity.fullRef],
     ["child head SHA", receipt.childHeadSha, identity.sha],
@@ -479,12 +493,15 @@ function validateRecoveryApprovalReceipt(identity, receipt, actor) {
 }
 
 function deriveAuthorizationRoute(identity, run, parentReceipt, recoveryReceipt) {
-  if (!recoveryReceipt) {
+  if (isBotActor(run)) {
+    if (recoveryReceipt) fail("automated ClawHub publication cannot select the recovery route");
     return parentReceipt.authorizationRoute;
   }
   const actor = String(run.actor?.login ?? "");
-  if (isBotActor(run)) {
-    fail("automated ClawHub publication cannot select the recovery route");
+  if (!recoveryReceipt) {
+    fail(
+      `RECOVERY_APPROVAL_RECEIPT_PATH is required for human ClawHub publication (artifact ${recoveryArtifactName(identity)})`,
+    );
   }
   validateRecoveryApprovalReceipt(identity, recoveryReceipt, actor);
   return "explicit-recovery";
@@ -508,7 +525,7 @@ function validateReleaseParentState(route, run) {
   }
 }
 
-function validateReleaseParentRun(identity, receipt, route, run) {
+function validateReleaseParentRun(identity, run) {
   if (!run || typeof run !== "object" || Array.isArray(run)) {
     fail("trusted release parent workflow run response is invalid");
   }
@@ -519,8 +536,8 @@ function validateReleaseParentRun(identity, receipt, route, run) {
     ["run id", String(run.id ?? ""), identity.parentRunId],
     ["run attempt", String(run.run_attempt ?? ""), identity.parentRunAttempt],
     ["workflow path", workflowPath, identity.parentWorkflow],
-    ["head branch", String(run.head_branch ?? ""), receipt.ref],
-    ["head SHA", String(run.head_sha ?? ""), receipt.headSha],
+    ["head branch", String(run.head_branch ?? ""), identity.toolingRef],
+    ["head SHA", String(run.head_sha ?? ""), identity.toolingSha],
     ["event", String(run.event ?? ""), "workflow_dispatch"],
   ];
   for (const [name, actual, expected] of checks) {
@@ -531,13 +548,12 @@ function validateReleaseParentRun(identity, receipt, route, run) {
 
   const normalizedQualifiedRef = normalizeQualifiedWorkflowRef(
     qualifiedRef,
-    receipt.ref,
-    receipt.fullRef,
+    identity.toolingRef,
+    identity.toolingFullRef,
   );
-  if (normalizedQualifiedRef && normalizedQualifiedRef !== receipt.fullRef) {
+  if (normalizedQualifiedRef && normalizedQualifiedRef !== identity.toolingFullRef) {
     fail("trusted release parent workflow path ref mismatch");
   }
-  validateReleaseParentState(route, run);
 }
 
 function validateProtectedTag(identity, tagRef) {
@@ -561,10 +577,10 @@ function validateMainLineage(identity, comparison) {
   }
 }
 
-function readBoundedReceipt(path, name) {
+function readBoundedReceipt(path, name, maxBytes = MAX_JSON_BYTES) {
   const receiptPath = requireString(path, `${name} path`);
   const stat = lstatSync(receiptPath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_JSON_BYTES) {
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxBytes) {
     fail(`${name} file is not a bounded regular file`);
   }
   return readFileSync(receiptPath, "utf8");
@@ -585,20 +601,22 @@ async function verifyTrustedToolingIdentity({
   );
   validateWorkflowRun(identity, run, actor);
 
-  const expectedParentArtifact = parentArtifactName(identity);
-  const parentArtifacts = await getJson(
-    `repos/${identity.parentRepository}/actions/runs/${identity.parentRunId}/artifacts?name=${encodeURIComponent(expectedParentArtifact)}`,
+  const parentRun = await getJson(
+    `repos/${identity.parentRepository}/actions/runs/${identity.parentRunId}/attempts/${identity.parentRunAttempt}`,
   );
-  validateArtifactResponse(parentArtifacts, {
-    headSha: identity.toolingSha,
-    name: expectedParentArtifact,
-    runId: identity.parentRunId,
-  });
-  const parentReceipt = parseParentAuthorizationReceipt(rawParentReceipt);
-  validateParentAuthorizationReceipt(identity, parentReceipt);
+  validateReleaseParentRun(identity, parentRun);
 
-  let recoveryReceipt;
-  if (rawRecoveryReceipt) {
+  const parentReceipt = parseParentAuthorizationReceipt(rawParentReceipt);
+  const recoveryReceipt = rawRecoveryReceipt
+    ? parseRecoveryApprovalReceipt(rawRecoveryReceipt)
+    : undefined;
+  const authorizationRoute = deriveAuthorizationRoute(
+    identity,
+    run,
+    parentReceipt,
+    recoveryReceipt,
+  );
+  if (recoveryReceipt) {
     const expectedRecoveryArtifact = recoveryArtifactName(identity);
     const recoveryArtifacts = await getJson(
       `repos/${identity.repository}/actions/runs/${identity.runId}/artifacts?name=${encodeURIComponent(expectedRecoveryArtifact)}`,
@@ -608,19 +626,24 @@ async function verifyTrustedToolingIdentity({
       name: expectedRecoveryArtifact,
       runId: identity.runId,
     });
-    recoveryReceipt = parseRecoveryApprovalReceipt(rawRecoveryReceipt);
   }
-  const authorizationRoute = deriveAuthorizationRoute(
-    identity,
-    run,
-    parentReceipt,
-    recoveryReceipt,
+  const authorizedChild = recoveryReceipt
+    ? {
+        runId: recoveryReceipt.authorizedChildRunId,
+        runAttempt: recoveryReceipt.authorizedChildRunAttempt,
+      }
+    : identity;
+  const expectedParentArtifact = parentArtifactName(identity, authorizedChild);
+  const parentArtifacts = await getJson(
+    `repos/${identity.parentRepository}/actions/runs/${identity.parentRunId}/artifacts?name=${encodeURIComponent(expectedParentArtifact)}`,
   );
-
-  const parentRun = await getJson(
-    `repos/${identity.parentRepository}/actions/runs/${identity.parentRunId}/attempts/${identity.parentRunAttempt}`,
-  );
-  validateReleaseParentRun(identity, parentReceipt, authorizationRoute, parentRun);
+  validateArtifactResponse(parentArtifacts, {
+    headSha: identity.toolingSha,
+    name: expectedParentArtifact,
+    runId: identity.parentRunId,
+  });
+  validateParentAuthorizationReceipt(identity, parentReceipt, authorizedChild);
+  validateReleaseParentState(authorizationRoute, parentRun);
 
   if (identity.toolingRoute === "main") {
     const comparison = await getJson(
@@ -666,6 +689,7 @@ async function main() {
     rawParentReceipt: readBoundedReceipt(
       process.env.PARENT_AUTHORIZATION_RECEIPT_PATH,
       "release parent authorization receipt",
+      MAX_PARENT_RECEIPT_BYTES,
     ),
     rawRecoveryReceipt,
     env: process.env,

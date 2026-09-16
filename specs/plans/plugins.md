@@ -61,6 +61,43 @@ Additional product decision:
 
 ## Constraints
 
+### Portable plugin icons
+
+Plugin publication resolves only the fixed `assets/icon.png` path used by OpenClaw.
+Manifest `icon` URLs and paths are ignored. Validate the PNG bytes,
+upload hash, size, and raster decoding; archive entries may be labeled
+`application/octet-stream`. Reuse the content-addressed presentation asset store
+and `/api/v1/skill-icons/<sha256>` endpoint for these catalog images. Persist the
+same URL on the release, manifest summary, current package, and catalog digests.
+
+Some official OpenClaw npm archives omit the icon even though it exists at their
+recorded source commit. Only packages owned by the active `openclaw` publisher in
+the `@openclaw/` scope may recover it from `openclaw/openclaw`, using a full commit
+SHA and an `extensions/<plugin>` path. Never fetch a moving branch, arbitrary
+manifest URL, or caller-selected host for this recovery. Missing/invalid images
+use the category glyph; transient fetch failures remain retryable. Plugin UI
+accepts only hosted presentation assets as bundled icons, including when old
+records contain manifest URLs. Homepage and search listings without a bundled
+icon use the current publisher profile image when available, then the category
+glyph. Profile images remain separate from package icons and are resolved from
+the publisher already read for catalog identity, so profile updates need no
+package digest backfill. Images that fail to load fall back to the category glyph.
+
+`maintenance:repairPluginIconsInternal` repairs existing latest releases in
+bounded pages (default 10, maximum 25). It defaults to `dryRun: true`; repeat with
+the returned `cursor` until `isDone` for each of `code-plugin` and `bundle-plugin`.
+Apply with `dryRun: false` from the initial cursor, then rerun the dry run to
+verify no remaining matches. A dry run validates images without storing assets
+or patching records. The repair uses an action because storage reads, source
+fetches, and raster decoding cannot run inside a migration mutation. Replays are
+idempotent; failed pages can be retried from their input cursor. Concurrent
+publishes, ownership changes, hosted icons, and deleted releases are preserved.
+Legacy URL metadata is replaced when a bundled asset is available; a concurrent
+icon change invalidates the prepared repair.
+It changes presentation metadata only, without changing release artifacts,
+versions, moderation, or download statistics. Keep it as maintenance tooling for
+imports created before portable icon support.
+
 ### ClawHub today
 
 ClawHub is currently a text-bundle registry for skills.
@@ -133,7 +170,7 @@ Package rules:
 
 - one package belongs to exactly one family
 - one code-plugin package maps to exactly one plugin id
-- one plugin id maps to exactly one live code-plugin package identity
+- within one publisher namespace, one plugin id maps to exactly one live code-plugin package identity; different publishers may distribute distinct packages with the same manifest id
 - if a publisher wants multiple code plugins, they publish multiple packages
 - package display casing can be preserved for UI, but uniqueness and routing
   must use the canonical normalized package key
@@ -141,6 +178,35 @@ Package rules:
   the oldest publish wins unless a moderator explicitly intervenes
 - plugin id transfer or replacement must be an explicit moderated workflow, not
   an accidental publish collision
+
+Runtime identity belongs to the artifact and is not a global package-name claim.
+Scoped package names and canonical official aliases select the distribution;
+the manifest id remains unchanged and still identifies the plugin in one
+OpenClaw installation. This does not permit installing two packages with the
+same runtime id into the same installation. Personal publisher records and
+their linked legacy user records share a namespace; organization namespaces
+remain distinct even when one user uploads for both. Publication, pending
+publication finalization, owner transfer, undelete, and administrative runtime
+repair validate this owner-scoped claim transactionally. Existing package
+ownership checks and per-package runtime-id immutability still apply.
+
+Runtime claim lookups use exact owner/runtime/active indexes, including a
+separate legacy user-owner lookup for personal publishers. They must not scan
+other publishers' claims for the same runtime id. These indexes use existing
+ownership fields; no denormalized owner key or data backfill is needed.
+
+Personal-principal recovery validates the destination legacy namespace before
+relinking the publisher, including during dry runs. It must reject conflicting
+live runtime claims atomically without changing owners or historical releases.
+
+Administrative runtime repair does not rewrite historical release manifests.
+If a parent is repaired from `voice` to `voice-next` and another package claims
+`voice`, malicious-latest quarantine must preserve the repaired parent id.
+Only historical code-plugin releases matching that canonical id may regain
+distribution tags or latest promotion. If none match, the package has no
+latest release and remains malicious. Never throw a collision error that
+rolls back the malicious release's quarantine. Historical artifacts remain
+unchanged; bundle-plugin fallback retains its release-derived identity.
 
 Current OpenClaw evidence supports this:
 
@@ -741,6 +807,24 @@ code-plugin packages only.
 API shape rule:
 
 - shared `/packages` endpoints are for discovery and shared metadata
+- Normal plugin/package search and browse return only public, non-deleted,
+  non-blocked packages with a published latest version. The package's
+  `latestVersionSummary.version` and its search digest's `latestVersion` are
+  the publication markers used on these read paths; reservations and pending
+  first publications have neither. These filters apply before result limits
+  and pagination, including featured, category, topic, and sorted discovery.
+- Authentication, package ownership, and publisher membership must not widen
+  normal catalog visibility. A private reservation such as `whatsapp` must
+  never accompany the published `@openclaw/whatsapp` in normal discovery.
+  Owner management/detail access and explicitly staff-only moderation APIs
+  retain their separate authorization rules and may inspect withheld records.
+- Explicit `channel=private` list/search requests may return published private
+  packages the authenticated caller is authorized to read; reservations,
+  unpublished, deleted, and blocked packages remain excluded.
+- Public plugin counts and topic suggestions use the same public publication
+  criteria. After deploying this eligibility change, the existing
+  `statsMaintenance:updateGlobalStatsAction` recount repairs historical totals;
+  the daily global-stats cron also performs this reconciliation.
 - family-specific endpoints are allowed for install and publish semantics
 - code-plugin download/install endpoints must not be overloaded for bundle
   plugins
@@ -846,7 +930,7 @@ Policy integration:
 - decide shared package identity model across skills/code plugins/bundle plugins
 - decide canonical internal package key vs public route/CLI locator rules
 - decide canonical package-name normalization rules and reserved-name policy
-- add global code-plugin `pluginId` uniqueness rules and transfer policy
+- add publisher-scoped code-plugin `pluginId` uniqueness rules and transfer policy
 - separate `pluginApiVersion` semver validation from publisher-defined package
   version validation
 - require semver package versions for code-plugin publishing

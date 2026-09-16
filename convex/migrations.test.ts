@@ -11,11 +11,14 @@ import {
   backfillOneNvidiaGitHubDownloadCount,
   backfillOneSkillInstallEstimate,
   buildCanonicalCatalogMetadataPatch,
+  buildSkillModerationAfterOverrideRemoval,
   runNvidiaGitHubDownloadBackfill,
   runCatalogMetadataCanonicalization,
   runPluginManifestSummaryBackfill,
   runPluginManifestSummaryBackfillPage,
+  runSkillManualOverrideCleanup,
   runSkillInstallBackfill,
+  shouldPreserveSkillModerationLock,
 } from "./migrations";
 
 type InstallBackfillWrappedHandler = {
@@ -50,6 +53,10 @@ type PluginManifestSummaryBackfillPageWrappedHandler = {
 };
 
 type CatalogMetadataCanonicalizationWrappedHandler = {
+  _handler: (ctx: unknown, args: { dryRun?: boolean; confirm?: string }) => Promise<unknown>;
+};
+
+type SkillManualOverrideCleanupWrappedHandler = {
   _handler: (ctx: unknown, args: { dryRun?: boolean; confirm?: string }) => Promise<unknown>;
 };
 
@@ -727,6 +734,119 @@ describe("skill install backfill migration", () => {
         }),
       }),
     );
+  });
+});
+
+describe("skill manual override cleanup migration", () => {
+  const previewPage = {
+    scanned: 1,
+    affected: 1,
+    outcomes: {
+      preserved: 0,
+      clean: 0,
+      pending: 0,
+      error: 0,
+      review: 1,
+      suspicious: 0,
+      malicious: 0,
+    },
+    samples: [
+      {
+        skillId,
+        slug: "release-validation",
+        latestVersion: "0.1.3",
+        currentVerdict: "clean",
+        nextOutcome: "review",
+      },
+    ],
+    continueCursor: "done",
+    isDone: true,
+  };
+
+  it("previews affected verdicts without invoking the write runner", async () => {
+    const runMutation = vi.fn().mockResolvedValue({});
+    const runQuery = vi.fn().mockResolvedValue(previewPage);
+    const handler = (
+      runSkillManualOverrideCleanup as unknown as SkillManualOverrideCleanupWrappedHandler
+    )._handler;
+
+    const result = await handler({ runMutation, runQuery }, {});
+
+    expect(runMutation).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: true,
+      dryRun: true,
+      confirmRequired: "remove-skill-manual-overrides",
+      before: { affected: 1, outcomes: { review: 1 } },
+    });
+  });
+
+  it("requires explicit confirmation before deleting stored overrides", async () => {
+    const handler = (
+      runSkillManualOverrideCleanup as unknown as SkillManualOverrideCleanupWrappedHandler
+    )._handler;
+
+    await expect(
+      handler({ runMutation: vi.fn(), runQuery: vi.fn() }, { dryRun: false }),
+    ).rejects.toThrow('Pass confirm="remove-skill-manual-overrides" to apply.');
+  });
+
+  it("preserves unrelated moderation quarantines while removing override metadata", () => {
+    expect(
+      shouldPreserveSkillModerationLock({
+        ...makeSkillDoc(),
+        moderationStatus: "hidden",
+        moderationReason: "quality.low",
+      }),
+    ).toBe(true);
+    expect(
+      shouldPreserveSkillModerationLock({
+        ...makeSkillDoc(),
+        moderationStatus: "hidden",
+        moderationReason: "scanner.llm.malicious",
+      }),
+    ).toBe(false);
+    expect(
+      shouldPreserveSkillModerationLock({
+        ...makeSkillDoc(),
+        softDeletedAt: 50,
+        moderationStatus: "hidden",
+        moderationReason: "manual.override.okay",
+        hiddenBy: ownerUserId,
+      }),
+    ).toBe(true);
+  });
+
+  it("fails closed when the latest version cannot be loaded", async () => {
+    const result = await buildSkillModerationAfterOverrideRemoval(
+      { db: { get: vi.fn().mockResolvedValue(null) } } as never,
+      {
+        ...makeSkillDoc(),
+        latestVersionId: testId("skillVersions", "skillVersions:missing"),
+      },
+      100,
+    );
+
+    expect(result).toEqual({
+      latestVersion: null,
+      patch: {
+        moderationStatus: "hidden",
+        moderationReason: "pending.scan.stale",
+        moderationNotes: undefined,
+        moderationFlags: undefined,
+        moderationVerdict: undefined,
+        moderationReasonCodes: ["review.scanner_source_missing"],
+        moderationEvidence: undefined,
+        moderationSummary: "Scanner source version is unavailable; hidden pending a new scan.",
+        moderationEngineVersion: undefined,
+        moderationEvaluatedAt: 100,
+        moderationSourceVersionId: undefined,
+        isSuspicious: false,
+        hiddenAt: 100,
+        hiddenBy: undefined,
+        lastReviewedAt: 100,
+      },
+    });
   });
 });
 
